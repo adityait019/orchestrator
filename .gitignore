@@ -1,0 +1,16 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+upload_folder
+.env
+downloads
+orchestrator_log.json
+orchestrator_log2.json
+root_agent.log

@@ -1,0 +1,16 @@
+[project]
+name = "orchestrator"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk[postgresql]>=0.3.22",
+    "alembic>=1.18.4",
+    "dotenv>=0.9.9",
+    "google-adk>=1.25.0",
+    "litellm>=1.80.13",
+    "nest-asyncio>=1.6.0",
+    "python-multipart>=0.0.20",
+    "requests>=2.32.5",
+]
