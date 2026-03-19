@@ -12,6 +12,10 @@ from a2a.client import A2AClient
 from utils.agent_card_extractor import extract_description_capabilities_skills
 from a2a.client.card_resolver import A2ACardResolver
 from pydantic import PrivateAttr
+import json
+import re
+
+META_TOKEN_RE = re.compile(r"^\[META:TOKEN_USAGE\]\s*(\{.*\})\s*$")
 logger = logging.getLogger(__name__)
 
 
@@ -227,6 +231,8 @@ class RemoteServerManager(RemoteA2aAgent):
         ui_files = []
         keep_text_parts = []
 
+        token_usage_meta=None
+
         for p in parts:
             fd = getattr(p, "file_data", None)
             if fd and getattr(fd, "file_uri", None):
@@ -237,9 +243,26 @@ class RemoteServerManager(RemoteA2aAgent):
                     }
                 )
                 continue
+            
 
-            if getattr(p, "text", None):
-                keep_text_parts.append(p)
+            text_val=getattr(p,"text",None)
+
+            m=META_TOKEN_RE.match(text_val.strip()) # type: ignore
+
+            if m:
+                try:
+                    payload=json.loads(m.group(1))
+                    if isinstance(payload,dict) and payload.get("type") =="token_usage":
+                        token_usage_meta=(token_usage_meta or  {})| payload
+                    else:
+                        pass
+                
+                except Exception:
+                    pass
+
+
+            if getattr(p, "text", None) and not m:
+                    keep_text_parts.append(p)
 
             # Drop everything else (function_call, function_response, images, etc.)
 
@@ -247,6 +270,10 @@ class RemoteServerManager(RemoteA2aAgent):
             event.custom_metadata = event.custom_metadata or {}
             event.custom_metadata["ui_files"] = ui_files
 
+
+        if token_usage_meta:
+            event.custom_metadata=getattr(event,"custom_metadata",None) or {}
+            event.custom_metadata["token_usage"] = token_usage_meta
         if content is not None:
             content.parts = keep_text_parts
 

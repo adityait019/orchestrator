@@ -30,6 +30,8 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+# from google.adk.sessions.database_session_service import DatabaseSessionService
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai.types import Content, Part, FileData
 import html
 # Root Agent
@@ -73,11 +75,14 @@ from database.models import AgentEvent
 @dataclass
 class InvocationContext:
     id:int | None =None
-    agent_name:str | None =None 
+    agent_name:str | None =None
+    agent_session_id:str | None= None 
     buffer:str =""
 
     
 load_dotenv(override=True)
+
+DATABASE_URL=os.getenv("DATABASE_URL","NOT PROVIDDED")
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -115,10 +120,15 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"]
 )
 
-session_service = InMemorySessionService()
+# session_service = DatabaseSessionService(
+#     db_url=DATABASE_URL
+# )
+
+session_service=InMemorySessionService()
 active_session: Dict[str, Dict] = {}
 
 file_saver = Path("upload_folder")
+
 
 runner = Runner(
     agent=root_agent,
@@ -288,10 +298,7 @@ async def run_agent(request: AgentRequest):
 
         full_text = ""
 
-        # active_agents = await load_active_agents()
-        # for a in active_agents:
-        #     print("AGENT: ",a.name, "|" , a.description)
-        # root_agent.sub_agents= active_agents
+
         async for event in runner.run_async(
             user_id=DEFAULT_USER, session_id=session.id, new_message=user_msg
         ):
@@ -389,6 +396,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     logger.info(f"WebSocket connected: {session_id}")
 
 
+
     await websocket.send_json({
         "type": "connection_established",
         "message": "🎉 Welcome to Agentic AI Gateway!",
@@ -396,6 +404,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     })
 
     active_session.setdefault(session_id, {"context": {}, "connected": True})
+
+    # config=GetSessionConfig(num_recent_events=1)
 
     session = await session_service.get_session(app_name=APP_NAME,user_id= DEFAULT_USER, session_id=session_id)
 
@@ -428,6 +438,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 db.add(orchestration_session)
                 await db.commit()
                 await db.refresh(orchestration_session)
+
             parts = [Part(text=prompt)]
             parts = await _attach_last_upload_parts(parts, session_id)
             user_msg = Content(role="user", parts=parts)
@@ -438,13 +449,38 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
             current_invocation=InvocationContext()
 
+            run_session_id=(
+                current_invocation.agent_session_id
+                if current_invocation.agent_session_id
+                else session.id
+            )
             async for event in runner.run_async(
                 user_id=DEFAULT_USER,
-                session_id=session.id,
+                session_id=run_session_id,
                 new_message=user_msg,
             ):
 
-                logger.info(f"EVENT TIMELINE: %s",debug_event(event))
+                # logger.info(f"EVENT TIMELINE: %s",debug_event(event))
+
+                input_token= 0
+                output_token=0
+                total_token=0 
+                if getattr(event,'usage_metadata',None):
+                    input_token=event.usage_metadata.prompt_token_count # type: ignore
+                    output_token=event.usage_metadata.candidates_token_count # type: ignore
+                    total_token=event.usage_metadata.total_token_count # type: ignore
+                    await websocket.send_json(
+                        {
+                            "type": "token_usase",
+                            "input_token":input_token,
+                            "output_token":output_token,
+                            "total_token":total_token
+                        }
+                    )
+                else:
+                    input_token=0
+                    output_token=0
+                    output_token=0
                 # 0) Explicit error
                 if getattr(event, "error_message", None):
                     if current_invocation.id:
@@ -523,6 +559,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
                 # ---------- 2) UI files via metadata (your current code) ----------
                 ui_files = (getattr(event, "custom_metadata", {}) or {}).get("ui_files")
+
+
                 if ui_files:
                     local_urls = []
                     # remote_urls = []
@@ -564,7 +602,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             "files": local_urls,
                             "message": "Generated files ready for download"
                         })
+                #token usage:
 
+                token_usage=(getattr(event, "custom_metadata", {}) or {}).get("token_usage")
+
+                logger.info(f"format of token uage : {token_usage}")
+                if token_usage:
+                    input_token=token_usage.get("input")
+                    output_token=token_usage.get("output")
+                    total_token=token_usage.get("total")
+                    await websocket.send_json(
+                        {
+                            "type": "token_usage",
+                            "input_token":input_token,
+                            "output_token":output_token,
+                            "total_token":total_token
+                        }
+                    )
                 # ---------- 3) Structured content.parts ----------
                 content = getattr(event, "content", None)
                 evt_parts = getattr(content, "parts", None) if content else None
@@ -632,10 +686,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                 await db.commit()
                                 await db.refresh(invocation)
 
+                                agent_session_id =f"{session_id}::{agent_name}"
 
+                                agent_session= await session_service.get_session(
+                                    app_name=APP_NAME,
+                                    user_id=DEFAULT_USER,
+                                    session_id=agent_session_id
+                                )
+                                if not agent_session:
+                                    agent_session=await session_service.create_session(
+                                        app_name=APP_NAME,
+                                        user_id=DEFAULT_USER,
+                                        session_id=agent_session_id
+                                    )
                                 current_invocation.id=invocation.id
                                 current_invocation.agent_name=agent_name
+                                current_invocation.agent_session_id=agent_session_id
                                 current_invocation.buffer=""
+
                             continue
 
                         # B) Tool response -> mark completed; artifacts will come as file_data parts

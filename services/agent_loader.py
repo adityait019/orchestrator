@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 import logging
 from typing import Any, Dict, Optional
-
+import asyncio
 from utils.agent_card_extractor import extract_description_capabilities_skills
 
 logger = logging.getLogger(__name__)
@@ -87,4 +87,5 @@ async def load_active_agents():
         agent._skills_full=skills_full
 
         dynamic_agents.append(agent)
+        await asyncio.sleep(2)
     return dynamic_agents

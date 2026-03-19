@@ -1,6 +1,6 @@
 import asyncio
 import httpx
-from datetime import datetime
+from datetime import datetime,timezone
 from sqlalchemy import select
 from database.session import AsyncSessionLocal
 from database.models import AgentRegistry
@@ -51,7 +51,7 @@ async def health_check_loop():
                     )
 
                 agent.is_healthy = current_status
-                agent.last_health_check = datetime.utcnow()
+                agent.last_health_check = datetime.now(timezone.utc)
 
             await db.commit()
 
