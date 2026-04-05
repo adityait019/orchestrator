@@ -30,7 +30,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-# from google.adk.sessions.database_session_service import DatabaseSessionService
+from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai.types import Content, Part, FileData
 import html
@@ -78,6 +78,9 @@ class InvocationContext:
     agent_name:str | None =None
     agent_session_id:str | None= None 
     buffer:str =""
+    input_tokens :int =0
+    output_tokens :int=0
+    total_tokens: int =0
 
     
 load_dotenv(override=True)
@@ -89,42 +92,67 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 
-logging.basicConfig(level=logging.INFO,filename='app.log',filemode='a')
 
 APP_NAME = "my_agent_app"
 DEFAULT_USER = "default_user"
-SHOW_RAW_TOOL_EVENTS = True  # flip to True when you want to see raw 
+SHOW_RAW_TOOL_EVENTS = True  
 
 active_agents=[]
+
+health_task: asyncio.Task | None = None
+
+
 @asynccontextmanager
-async def lifespan(app:FastAPI):
-    global active_agents
-    task=asyncio.create_task(health_check_loop())
-    
-    active_agents=await load_active_agents()
-    root_agent.sub_agents=active_agents
-    # active_agents=await load_active_agents()
+async def lifespan(app: FastAPI):
+    global health_task
 
-    logger.info("+++ HEALTH MONITOR START +++")
-    yield
-    task.cancel()
-    logger.info("--- HEALTH MONITOR STOPPED ---")
+    logger.info("Starting FastAPI lifespan")
 
+    # Start health monitor
+    if health_task is None or health_task.done():
+        health_task = asyncio.create_task(health_check_loop())
+
+    try:
+        active_agents = await load_active_agents()
+
+        if not active_agents:
+            logger.warning("⚠️ No active agents were loaded")
+
+        root_agent.sub_agents = active_agents
+        logger.info("✅ %d agents registered with orchestrator", len(active_agents))
+
+        yield
+
+    except Exception as ex:
+        logger.exception("❌ Failed during application startup: %s", ex)
+        raise  # fail fast (recommended)
+
+    finally:
+        logger.info("Stopping FastAPI lifespan")
+
+        if health_task:
+            health_task.cancel()
+            try:
+                await health_task
+            except asyncio.CancelledError:
+                pass
 
 app = FastAPI(title="Orchestrator Agent API", lifespan=lifespan)
 
 app.include_router(agent_router)
+# app.include_router(auth_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"]
 )
 
-# session_service = DatabaseSessionService(
-#     db_url=DATABASE_URL
-# )
+session_service = DatabaseSessionService(
+    db_url=DATABASE_URL
+)
 
-session_service=InMemorySessionService()
+# session_service=InMemorySessionService()
 active_session: Dict[str, Dict] = {}
 
 file_saver = Path("upload_folder")
@@ -373,6 +401,7 @@ async def upload_files(files: List[UploadFile] = File(...), session_id: str = Fo
             )
             await session_service.append_event(session, evt)
 
+        logger.info(f"Uploaded file successfully {file_id}, {session_id}, {uploaded_files} total file count {len(uploaded_files)}")
         return JSONResponse({
             "status": "success",
             "file_id": file_id,
@@ -393,6 +422,8 @@ async def upload_files(files: List[UploadFile] = File(...), session_id: str = Fo
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
+
+    # session_id=str(uuid.uuid4())+session_id
     logger.info(f"WebSocket connected: {session_id}")
 
 
@@ -404,10 +435,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     })
 
     active_session.setdefault(session_id, {"context": {}, "connected": True})
-
-    # config=GetSessionConfig(num_recent_events=1)
-
-    session = await session_service.get_session(app_name=APP_NAME,user_id= DEFAULT_USER, session_id=session_id)
+    # DEFAULT_USER="USER_ID"+str(uuid.uuid4())
+    config=GetSessionConfig(num_recent_events=1)
+    session = await session_service.get_session(app_name=APP_NAME,user_id= DEFAULT_USER, session_id=session_id,config=config)
 
 
     if not session:
@@ -426,6 +456,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
             if not prompt:
                 continue
+
+
+            current_invocation=InvocationContext()
             
             #----------NEW WORKFLOW(Per Prompt)--------
             workflow_id=str(uuid.uuid4())
@@ -439,6 +472,31 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 await db.commit()
                 await db.refresh(orchestration_session)
 
+
+            # --------------------------------------------------
+            # ✅ FIX: Create ROOT (Cortex) invocation ONCE
+            # This represents orchestrator decision step
+            # --------------------------------------------------
+            async with AsyncSessionLocal() as db:
+                root_invocation = AgentInvocation(
+                    orchestration_session_id=orchestration_session.id,
+                    agent_name="Cortex",
+                    agent_session_id=f"{session_id}::Cortex",
+                    step_order=1,
+                    status="working",
+                    started_at=datetime.now(timezone.utc),
+                    input_payload=prompt[:5000],
+                )
+                db.add(root_invocation)
+                await db.commit()
+                await db.refresh(root_invocation)
+
+            # ✅ Point current_invocation to Cortex
+            current_invocation.id = root_invocation.id
+            current_invocation.agent_name = "Cortex"
+            current_invocation.agent_session_id = session.id
+            current_invocation.buffer = ""
+
             parts = [Part(text=prompt)]
             parts = await _attach_last_upload_parts(parts, session_id)
             user_msg = Content(role="user", parts=parts)
@@ -447,13 +505,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             await websocket.send_json({"type": "status_type", "stage": "turn_started"})
 
 
-            current_invocation=InvocationContext()
 
             run_session_id=(
                 current_invocation.agent_session_id
                 if current_invocation.agent_session_id
                 else session.id
             )
+
             async for event in runner.run_async(
                 user_id=DEFAULT_USER,
                 session_id=run_session_id,
@@ -462,25 +520,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
                 # logger.info(f"EVENT TIMELINE: %s",debug_event(event))
 
-                input_token= 0
-                output_token=0
-                total_token=0 
                 if getattr(event,'usage_metadata',None):
-                    input_token=event.usage_metadata.prompt_token_count # type: ignore
-                    output_token=event.usage_metadata.candidates_token_count # type: ignore
-                    total_token=event.usage_metadata.total_token_count # type: ignore
+                    current_invocation.input_tokens +=event.usage_metadata.prompt_token_count or 0 # type: ignore
+                    current_invocation.output_tokens +=event.usage_metadata.candidates_token_count or 0 # type: ignore
+                    current_invocation.total_tokens +=event.usage_metadata.total_token_count or 0 # type: ignore
                     await websocket.send_json(
                         {
                             "type": "token_usase",
-                            "input_token":input_token,
-                            "output_token":output_token,
-                            "total_token":total_token
+                            "input_token":current_invocation.input_tokens,
+                            "output_token":current_invocation.output_tokens,
+                            "total_token":current_invocation.total_tokens
                         }
                     )
-                else:
-                    input_token=0
-                    output_token=0
-                    output_token=0
+                
                 # 0) Explicit error
                 if getattr(event, "error_message", None):
                     if current_invocation.id:
@@ -495,6 +547,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                 invocation.status="failed"
                                 invocation.completed_at=datetime.now(timezone.utc)
                                 invocation.output_payload=current_invocation.buffer[:5000]
+                                invocation.input_tokens= current_invocation.input_tokens
+                                invocation.output_tokens=current_invocation.output_tokens
+                                invocation.total_tokens=current_invocation.total_tokens
                                 await db.commit()
                             
                         
@@ -519,6 +574,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                 if invocation:
                                     invocation.status="failed"
                                     invocation.completed_at=datetime.now(timezone.utc)
+                                    invocation.input_tokens= current_invocation.input_tokens
+                                    invocation.output_tokens=current_invocation.output_tokens
+                                    invocation.total_tokens=current_invocation.total_tokens
                                     await db.commit()
                             
                         await websocket.send_json({
@@ -608,15 +666,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
                 logger.info(f"format of token uage : {token_usage}")
                 if token_usage:
-                    input_token=token_usage.get("input")
-                    output_token=token_usage.get("output")
-                    total_token=token_usage.get("total")
+                    current_invocation +=token_usage.get("input",0)
+                    current_invocation.output_token +=token_usage.get("output",0)
+                    current_invocation.total_token +=token_usage.get("total")
                     await websocket.send_json(
                         {
                             "type": "token_usage",
-                            "input_token":input_token,
-                            "output_token":output_token,
-                            "total_token":total_token
+                            "input_token":current_invocation.input_tokens,
+                            "output_token":current_invocation.output_tokens,
+                            "total_token":current_invocation.total_tokens
                         }
                     )
                 # ---------- 3) Structured content.parts ----------
@@ -629,7 +687,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         fc = getattr(p, "function_call", None)
 
                         if fc:
-
+                            # ⚠️ NOTE:
+                            # This finalizes the CURRENT agent invocation.
+                            # Make sure a new invocation is created BEFORE streaming
+                            # output for the next agent.
                             if current_invocation.id:
                                 async with AsyncSessionLocal() as db:
                                     result=await db.execute(
@@ -642,6 +703,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                         invocation.status="completed"
                                         invocation.completed_at=datetime.now(timezone.utc)
                                         invocation.output_payload=current_invocation.buffer[:5000]
+                                        invocation.input_tokens= current_invocation.input_tokens
+                                        invocation.output_tokens=current_invocation.output_tokens
+                                        invocation.total_tokens=current_invocation.total_tokens
                                         await db.commit()
                             
                                 current_invocation=InvocationContext()
@@ -764,6 +828,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                 "type": "bot_message",
                                 "content": p.text,
                             })
+
+            # ⚠️ NOTE:
+            # This finalizes the CURRENT agent invocation.
+            # Make sure a new invocation is created BEFORE streaming
+            # output for the next agent.
+                           
             if current_invocation.id:
                 async with AsyncSessionLocal() as db:
                     result=await db.execute(
@@ -776,6 +846,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             invocation.status="completed"
                             invocation.completed_at=datetime.now(timezone.utc)
                             invocation.output_payload=current_invocation.buffer[:5000]
+                            invocation.input_tokens= current_invocation.input_tokens
+                            invocation.output_tokens=current_invocation.output_tokens
+                            invocation.total_tokens=current_invocation.total_tokens
                             await db.commit()
                             
                     current_invocation=InvocationContext()                
@@ -810,8 +883,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         })
         active_session.pop(session_id, None)
         await websocket.close()
-
-
 
 
 if __name__ == "__main__":

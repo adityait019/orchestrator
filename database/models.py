@@ -31,6 +31,26 @@ class Base(DeclarativeBase):
 # 1️⃣ Agent Registry (Already in your system)
 # -------------------------------------------------------------------
 
+# class AgentRegistry(Base):
+#     __tablename__ = "agents"
+
+#     id: Mapped[int] = mapped_column(primary_key=True)
+#     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+#     host: Mapped[str] = mapped_column(String, nullable=False)
+#     port: Mapped[int] = mapped_column(Integer, nullable=False)
+#     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+#     is_healthy: Mapped[bool] = mapped_column(Boolean, default=False)
+
+#     #Agent Card 
+#     agent_card: Mapped[dict]=mapped_column(JSON,nullable=False)
+
+#     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+#     last_health_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+
+from sqlalchemy.dialects.postgresql import JSONB
+
 class AgentRegistry(Base):
     __tablename__ = "agents"
 
@@ -38,9 +58,14 @@ class AgentRegistry(Base):
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     host: Mapped[str] = mapped_column(String, nullable=False)
     port: Mapped[int] = mapped_column(Integer, nullable=False)
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_healthy: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # ✅ JSONB to match DB
+    agent_card: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    # ✅ DB owns timestamp now
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_health_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -49,6 +74,26 @@ class AgentRegistry(Base):
 # 2️⃣ Orchestration Session (Top-level workflow)
 # -------------------------------------------------------------------
 
+# class OrchestrationSession(Base):
+#     __tablename__ = "orchestration_sessions"
+
+#     id: Mapped[int] = mapped_column(primary_key=True)
+
+#     session_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+#     user_id: Mapped[str] = mapped_column(String(255), index=True)
+
+#     status: Mapped[str] = mapped_column(String(50), default="active")
+
+#     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now().astimezone())
+#     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+#     # Relationships
+#     invocations: Mapped[list["AgentInvocation"]] = relationship(
+#         back_populates="orchestration_session",
+#         cascade="all, delete-orphan"
+#     )
+
+
 class OrchestrationSession(Base):
     __tablename__ = "orchestration_sessions"
 
@@ -56,22 +101,68 @@ class OrchestrationSession(Base):
 
     session_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     user_id: Mapped[str] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(50))
 
-    status: Mapped[str] = mapped_column(String(50), default="active")
+    # ✅ CRITICAL FIX
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now().astimezone())
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
-    # Relationships
     invocations: Mapped[list["AgentInvocation"]] = relationship(
         back_populates="orchestration_session",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
+
 
 
 # -------------------------------------------------------------------
 # 3️⃣ Agent Invocation (Each sub-agent execution)
 # -------------------------------------------------------------------
+
+# class AgentInvocation(Base):
+#     __tablename__ = "agent_invocations"
+
+#     id: Mapped[int] = mapped_column(primary_key=True)
+
+#     orchestration_session_id: Mapped[int] = mapped_column(
+#         ForeignKey("orchestration_sessions.id"),
+#         index=True
+#     )
+
+#     agent_name: Mapped[str] = mapped_column(String(150), index=True)
+#     agent_session_id: Mapped[str] = mapped_column(String(255), index=True)
+
+#     step_order: Mapped[int] = mapped_column(Integer)
+
+#     status: Mapped[str] = mapped_column(String(50))  # queued, working, completed, failed
+
+#     input_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+#     output_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+#     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+#     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+#     # Relationships
+#     orchestration_session: Mapped["OrchestrationSession"] = relationship(
+#         back_populates="invocations"
+#     )
+
+#     events: Mapped[list["AgentEvent"]] = relationship(
+#         back_populates="invocation",
+#         cascade="all, delete-orphan"
+#     )
+
+#     artifacts: Mapped[list["Artifact"]] = relationship(
+#         back_populates="invocation",
+#         cascade="all, delete-orphan"
+#     )
 
 class AgentInvocation(Base):
     __tablename__ = "agent_invocations"
@@ -88,7 +179,7 @@ class AgentInvocation(Base):
 
     step_order: Mapped[int] = mapped_column(Integer)
 
-    status: Mapped[str] = mapped_column(String(50))  # queued, working, completed, failed
+    status: Mapped[str] = mapped_column(String(50))
 
     input_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -96,7 +187,11 @@ class AgentInvocation(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Relationships
+    # ✅ NEW (Phase 1)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     orchestration_session: Mapped["OrchestrationSession"] = relationship(
         back_populates="invocations"
     )

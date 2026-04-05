@@ -15,3 +15,5 @@ orchestrator_log.json
 orchestrator_log2.json
 root_agent.log
 .db
+session.db
+.adk
