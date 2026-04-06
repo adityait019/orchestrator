@@ -1,8 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pathlib import Path
-import hmac
-import time
+import os
 from database.session import AsyncSessionLocal
 from database.models import Artifact
 from services.file_service import FileService
@@ -10,9 +9,11 @@ from sqlalchemy import select
 
 router = APIRouter(prefix="/files", tags=["Files"])
 
+
+
 file_service = FileService(
-    signing_secret="dev-only-secret",
-    base_url="http://localhost:8000",
+    signing_secret=os.getenv("SECRET_KEY", "dev-only-secret"),
+    base_url=os.getenv("PUBLIC_BASE_URL", "http://localhost:8000"),
 )
 FILE_ROOT = Path("upload_folder")
 @router.get("/{file_id}/{filename}")

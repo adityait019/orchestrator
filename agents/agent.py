@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 logging.basicConfig(
-    level=logging.DEBUG,filemode='a',filename="root_agent.log",
+    level=logging.INFO,filemode='a',filename="root_agent.log",
     format="CorteX:%(asctime)s - %(levelname)s - %(message)s"
 )
 

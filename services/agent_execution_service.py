@@ -56,3 +56,30 @@ class AgentExecutionService:
             await db.commit()
             await db.refresh(invocation)
         return invocation,agent_session_id
+    
+    async def complete_invocation(self, invocation_id, output):
+        async with self.db() as db:
+            result = await db.execute(
+                select(AgentInvocation).where(AgentInvocation.id == invocation_id)
+            )
+            inv = result.scalar_one_or_none()
+
+            if inv:
+                inv.status = "completed"
+                inv.completed_at = datetime.now(timezone.utc)
+                inv.output_payload = output[:5000]
+                await db.commit()
+
+
+    async def fail_invocation(self, invocation_id, error_msg):
+        async with self.db() as db:
+            result = await db.execute(
+                select(AgentInvocation).where(AgentInvocation.id == invocation_id)
+            )
+            inv = result.scalar_one_or_none()
+
+            if inv:
+                inv.status = "failed"
+                inv.completed_at = datetime.now(timezone.utc)
+                inv.output_payload = error_msg[:5000]
+                await db.commit()

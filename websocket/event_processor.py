@@ -5,18 +5,27 @@ from tools.helper_downloads import fetch_remote_file
 
 class EventProcessor:
 
-    def __init__(self, emitter, agent_service, artifact_service):
+    def __init__(self, emitter, agent_service, artifact_service, file_service):
         self.emitter = emitter
         self.agent_service = agent_service
         self.artifact_service = artifact_service
+        self.file_service = file_service
+
 
     async def process(self, event, ctx):
 
         # 1. Error
         if getattr(event, "error_message", None):
+
+            if ctx.get("current_invocation"):
+                await self.agent_service.fail_invocation(
+                    ctx["current_invocation"],
+                    event.error_message
+                )
+
             await self.emitter.bot_message(f"❌ {event.error_message}")
             return
-
+        
         # 2. Streaming text
         if getattr(event, "text", None):
             await self.emitter.bot_message(event.text)
@@ -83,22 +92,33 @@ class EventProcessor:
             if getattr(p, "file_data", None):
                 fd = p.file_data
 
+
                 file_id, filename, path = await fetch_remote_file(fd.file_uri)
+
+                signed_url = self.file_service.make_signed_url(file_id, filename)
 
                 await self.artifact_service.store_artifact(
                     ctx["current_invocation"],
                     file_id,
                     filename,
-                    f"/files/{file_id}/{filename}",
+                    signed_url,
                     path
                 )
 
-                await self.emitter.file_processed(
-                    [f"/files/{file_id}/{filename}"]
-                )
+                await self.emitter.file_processed([signed_url])
 
                 continue
+            if getattr(event, "usage_metadata", None):
+                usage = event.usage_metadata
 
+                # store or emit
+                await self.emitter.status(
+                    "token_usage",
+                    input=usage.prompt_token_count,
+                    output=usage.candidates_token_count,
+                    total=usage.total_token_count
+                )
+                
             # ---- TEXT ----
             if getattr(p, "text", None):
                 await self.emitter.bot_message(p.text)

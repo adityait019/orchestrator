@@ -145,3 +145,36 @@ async def load_active_agents() -> List[BaseAgent]:
 
     logger.info("✅ Finished loading %d remote agents.", len(agents))
     return agents
+
+
+async def build_single_agent(agent_row) -> Optional[BaseAgent]:
+    import httpx
+
+    agent_card_url = f"http://{agent_row.host}:{agent_row.port}/.well-known/agent-card.json"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            card_dict = await _resolve_agent_card_json(
+                agent_card_url,
+                httpx_client=client,
+            )
+    except Exception as ex:
+        logger.warning(f"Failed to load agent {agent_row.name}: {ex}")
+        return None
+
+    description, capabilities, skills, skills_full = (
+        extract_description_capabilities_skills(card_dict)
+    )
+
+    agent = RemoteServerManager(
+        name=agent_row.name,
+        agent_card=agent_card_url,
+        a2a_client_factory=a2a_client_factory,
+        description=description,
+    )
+
+    agent._capabilities = capabilities
+    agent._skills = skills
+    agent._skills_full = skills_full
+
+    return agent

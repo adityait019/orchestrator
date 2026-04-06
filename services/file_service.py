@@ -17,6 +17,8 @@ class FileService:
         self.base_url=base_url.rstrip("/")
         self.ttl=ttl
 
+
+
     def _sign(self,file_id:str,filename:str,exp:int)->str:
         msg=f"{file_id}:{filename}:{exp}".encode("utf-8")
 

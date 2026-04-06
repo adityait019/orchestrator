@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-
+from typing import Dict, Any
 
 class AddAgentRequest(BaseModel):
     name:str
@@ -12,5 +12,6 @@ class AgentResponse(BaseModel):
     port:int
     is_active: bool
     is_healthy: bool
+    agent_card: Dict[str, Any]
 
 

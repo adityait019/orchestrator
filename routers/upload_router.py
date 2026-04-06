@@ -6,9 +6,9 @@ from datetime import datetime
 from fastapi.responses import JSONResponse
 from typing import Dict, List
 import logging
-from main import APP_NAME
 from services.file_service import FileService 
 from session.session_manager import SessionManager
+from core.config import APP_NAME, DEFAULT_USER
 import os
 
 logger = logging.getLogger(__name__)
@@ -17,18 +17,17 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 
 UPLOAD_DIR = Path("upload_folder")
 
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://10.73.83.83:8000")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000")
 file_saver = Path("upload_folder")
 file_service = FileService(
-    signing_secret="dev-only-secret",
+    signing_secret=os.getenv("SECRET_KEY", "dev-only-secret"),
     base_url=PUBLIC_BASE_URL,
 )
-DEFAULT_USER = "default_user"
 session_manager = SessionManager(db_url=os.getenv("DATABASE_URL"))
 active_session=session_manager.active_sessions
 
 
-@router.post("/upload")
+@router.post("/")
 async def upload_files(files: List[UploadFile] = File(...), session_id: str = Form("main")):
     file_id = uuid.uuid4().hex
     target_dir = file_saver / file_id
