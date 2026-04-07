@@ -9,8 +9,11 @@ dependencies = [
     "alembic>=1.18.4",
     "dotenv>=0.9.9",
     "google-adk>=1.25.0",
+    "httpx>=0.28.1",
     "litellm>=1.80.13",
     "nest-asyncio>=1.6.0",
     "python-multipart>=0.0.20",
     "requests>=2.32.5",
+    "rich>=14.3.3",
+    "websockets>=15.0.1",
 ]

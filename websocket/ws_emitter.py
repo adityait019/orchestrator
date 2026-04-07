@@ -14,14 +14,14 @@ class WSEmitter:
     async def bot_message(self, text):
 
         await self.ws.send_json({
-            "type": "bot_message",
+            "type": "message",
             "content": text
         })
 
     async def status(self, stage, **extra):
 
         payload = {
-            "type": "status_type",
+            "type": "status",
             "stage": stage
         }
 
@@ -32,7 +32,7 @@ class WSEmitter:
     async def tool_call(self, name, args):
 
         await self.ws.send_json({
-            "type": "tool_call_type",
+            "type": "tool_call",
             "name": name,
             "args": args
         })
@@ -40,7 +40,7 @@ class WSEmitter:
     async def tool_result(self, name, response):
 
         await self.ws.send_json({
-            "type": "tool_result_type",
+            "type": "tool_result",
             "name": name,
             "response": response
         })
@@ -66,7 +66,7 @@ class WSEmitter:
         from datetime import datetime
 
         await self.ws.send_json({
-            "type": "status_type",
+            "type": "status",
             "stage": "done",
             "ts": datetime.now().isoformat()
         })
