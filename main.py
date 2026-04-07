@@ -874,6 +874,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {session_id}")
         active_session.pop(session_id, None)
+        
 
     except Exception as e:
         logger.error(f"WebSocket Error: {e}")
