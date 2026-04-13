@@ -21,15 +21,15 @@ class AgentRequest(BaseModel):
 class AgentResponse(BaseModel):
     response: str
 
-session_manager = SessionManager(db_url=os.getenv("DATABASE_URL"))
+session_manager = SessionManager(db_url=os.getenv("DATABASE_URL","not-present"),app_name=APP_NAME)
 runner = create_runner(session_manager.session_service)
 
 @router.post("/", response_model=AgentResponse)
 async def run_agent(request: AgentRequest):
     try:
-        session = await session_manager.get_session(app_name=APP_NAME, user_id=DEFAULT_USER, session_id=request.session_id)
+        session = await session_manager.get_session(user_id=DEFAULT_USER, session_id=request.session_id)
         if not session:
-            session = await session_manager.create_session(app_name=APP_NAME, user_id=DEFAULT_USER, session_id=request.session_id)
+            session = await session_manager.create_session(user_id=DEFAULT_USER, session_id=request.session_id)
 
         parts = [Part(text=request.prompt)]
         user_msg = Content(role="user", parts=parts)

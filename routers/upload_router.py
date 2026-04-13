@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Form, HTTPException, UploadFile, File
+from fastapi import APIRouter, Form, HTTPException, UploadFile, File,Request
 import uuid
 import shutil
 from pathlib import Path
@@ -23,12 +23,12 @@ file_service = FileService(
     signing_secret=os.getenv("SECRET_KEY", "dev-only-secret"),
     base_url=PUBLIC_BASE_URL,
 )
-session_manager = SessionManager(db_url=os.getenv("DATABASE_URL"))
-active_session=session_manager.active_sessions
+
 
 
 @router.post("/")
-async def upload_files(files: List[UploadFile] = File(...), session_id: str = Form("main")):
+async def upload_files(request:Request,files: List[UploadFile] = File(...), session_id: str = Form("main")):
+    session_manager=request.app.state.session_manager
     file_id = uuid.uuid4().hex
     target_dir = file_saver / file_id
 
@@ -59,27 +59,13 @@ async def upload_files(files: List[UploadFile] = File(...), session_id: str = Fo
             "file_count": len(uploaded_files),
         }
 
-        active_session.setdefault(session_id, {"context": {}})
-        active_session[session_id]["last_upload"] = upload_details
-
- 
-        # Ensure session exists but DO NOT store uploads in DB state
-        session = await session_manager.get_session(
-            app_name=APP_NAME,
+        await session_manager.set_last_upload(
             user_id=DEFAULT_USER,
             session_id=session_id,
+            upload_details=upload_details,
         )
 
-        if not session:
-            session = await session_manager.create_session(
-                app_name=APP_NAME,
-                user_id=DEFAULT_USER,
-                session_id=session_id,
-            )
-
-        # ✅ Store uploads only in active_session (one-turn context)
-        active_session.setdefault(session_id, {})
-        active_session[session_id]["last_upload"] = upload_details        
+ 
 
         logger.info(f"Uploaded file successfully {file_id}, {session_id}, {uploaded_files} total file count {len(uploaded_files)}")
         return JSONResponse({

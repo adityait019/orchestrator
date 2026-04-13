@@ -174,3 +174,8 @@ async def activate_agent(
     return{
         "message": f"Agent '{agent_name}' activated successfully"
     }
+
+@router.get("/total_agents",response_model=list[AgentResponse])
+async def get_total_agents(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(AgentRegistry))
+    return result.scalars().all()        

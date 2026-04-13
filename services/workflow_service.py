@@ -33,7 +33,7 @@ class WorkflowService:
     
 
     async def complete_workflow(self,workflow_id):
-        async with self.db as db:
+        async with self.db() as db:
 
             result=await db.execute(
                 select(OrchestrationSession)
@@ -47,3 +47,18 @@ class WorkflowService:
                 ws.completed_at=datetime.now(timezone.utc)
                 await db.commit()
 
+    async def fail_workflow(self,workflow_id,error_msg):
+        async with self.db() as db:
+
+            result=await db.execute(
+                select(OrchestrationSession)
+                .where(OrchestrationSession.id== workflow_id)
+            )
+
+            ws=result.scalar_one_or_none()
+
+            if ws:
+                ws.status = "failed"
+                ws.completed_at=datetime.now(timezone.utc)
+                ws.error_message=error_msg[:5000]
+                await db.commit()

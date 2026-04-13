@@ -18,6 +18,26 @@ class AgentExecutionService:
         self.session_service=session_service
     
 
+    async def start_root_invocation(
+        self,
+        workflow_id,
+        session_id,
+        prompt,
+    ):
+        """
+        Root agent (Cortex) invocation.
+        """
+        invocation, agent_session_id = await self.start_invocation(
+            workflow_id=workflow_id,
+            session_id=session_id,
+            agent_name="Cortex",   # ✅ fixed
+            prompt=prompt,
+            args={},               # root has no tool args
+        )
+        return invocation
+
+
+
     async def start_invocation(
       self,
       workflow_id,
@@ -57,6 +77,7 @@ class AgentExecutionService:
             await db.refresh(invocation)
         return invocation,agent_session_id
     
+
     async def complete_invocation(self, invocation_id, output):
         async with self.db() as db:
             result = await db.execute(

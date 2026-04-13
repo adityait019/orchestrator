@@ -6,7 +6,8 @@ import html
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 import httpx
-import requests  # ensure available in your classification service env
+import uuid
+import requests
 
 DOWNLOAD_ROOT = Path(os.getenv("CLASSIFIER_DOWNLOAD_ROOT", "./downloads"))
 DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
@@ -64,51 +65,106 @@ def _parse_signed_url(file_url: str) -> tuple[str, str, int]:
     return file_id, filename, exp
 
 
-async def fetch_remote_file(file_url: str, dest_root: Path = DOWNLOAD_ROOT, timeout: int = 120):
+async def fetch_remote_file(
+    file_url: str,
+    dest_root: Path = DOWNLOAD_ROOT,
+    timeout: int = 120,
+    file_id: str | None = None,
+) -> tuple[str, str, str]:
     """
-    Download the file pointed to by the signed URL into a local cache folder:
+    Download a remote file into a local cache folder.
+
+    Destination layout:
       <dest_root>/<file_id>/<filename>
 
-    Raises:
-      ValueError on signature param issues, expired links, or unsupported extension.
-      RuntimeError on HTTP or content-type issues.
+    If file_id is not provided or cannot be derived, a safe default
+    UUID-based file_id is generated.
+
+    Args:
+        file_url (str):
+            HTTP/HTTPS URL of the file.
+
+        dest_root (Path):
+            Root directory for downloads.
+
+        timeout (int):
+            HTTP request timeout (seconds).
+
+        file_id (Optional[str]):
+            Optional explicit file_id override.
+
+    Returns:
+        tuple[str, str, str]:
+            (file_id, filename, absolute_local_path)
     """
-    # Parse and validate URL and expiry
-    file_id, filename, exp = _parse_signed_url(file_url)
 
-    # Validate expiry BEFORE making the request
-    now = int(time.time())
-    if exp < now:
-        raise ValueError("Signed URL is expired. Please re-upload to get a fresh link.")
+    # -----------------------------
+    # Parse URL
+    # -----------------------------
+    parsed = urlparse(file_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
 
-    # Optional: validate extension on the *decoded* filename
+    filename = unquote(Path(parsed.path).name)
+    if not filename:
+        raise ValueError("Could not determine filename from URL")
 
+    # -----------------------------
+    # Determine file_id
+    # Priority:
+    #   1. Explicit argument
+    #   2. Filename stem
+    #   3. URL path fallback
+    #   4. UUID
+    # -----------------------------
+    if file_id:
+        resolved_file_id = file_id.strip()
+    else:
+        stem = Path(filename).stem
+        if stem:
+            resolved_file_id = stem
+        elif parsed.path:
+            resolved_file_id = Path(parsed.path).parts[-2]
+        else:
+            resolved_file_id = f"file-{uuid.uuid4().hex}"
+
+    # Final safety net
+    if not resolved_file_id:
+        resolved_file_id = f"file-{uuid.uuid4().hex}"
+
+    # -----------------------------
     # Prepare destination path
-    dest_dir = dest_root / file_id
+    # -----------------------------
+    dest_dir = dest_root / resolved_file_id
     dest_dir.mkdir(parents=True, exist_ok=True)
     local_path = dest_dir / filename
 
-    # Sanitize URL again in case upstream passed escaped entities
-    safe_url = _sanitize_url(file_url)
-
-    # Stream download to file
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # -----------------------------
+    # Download (stream to disk)
+    # -----------------------------
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+    ) as client:
         try:
-            resp = await client.get(safe_url)
-        except Exception as e:
-            raise RuntimeError(f"Failed to perform GET on signed URL: {e}") from e
+            resp = await client.get(file_url)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to GET file URL: {exc}") from exc
 
         if resp.status_code != 200:
-            # Bubble the status to help orchestration decide on re-sign/re-upload
-            raise RuntimeError(f"Failed to download file (HTTP {resp.status_code}).")
+            raise RuntimeError(
+                f"Failed to download file (HTTP {resp.status_code}): "
+                f"{resp.text[:200]}"
+            )
 
-  
+        try:
+            with open(local_path, "wb") as f:
+                async for chunk in resp.aiter_bytes(chunk_size=8192):
+                    f.write(chunk)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to write file to disk: {exc}") from exc
 
-        # Write to disk
-        with open(local_path, "wb") as f:
-            f.write(resp.content)
-
-    return file_id, filename, str(local_path.resolve())
+    return resolved_file_id, filename, str(local_path.resolve())
 
 
 

@@ -1,11 +1,13 @@
 import json
-import asyncio
+import uuid
 from google.genai.types import Content, Part
 from fastapi import WebSocketDisconnect
-
+import logging
 from websocket.ws_emitter import WSEmitter
 from websocket.event_processor import EventProcessor
+from services.invocation_context import InvocationContext
 
+logger = logging.getLogger(__name__)
 
 class WebSocketHandler:
 
@@ -25,25 +27,18 @@ class WebSocketHandler:
         self.artifact_service = artifact_service
         self.file_service = file_service
 
-    async def handle(self, websocket, session_id, user_id):
+    async def handle(self, websocket, session_id: str, user_id: str):
 
         await websocket.accept()
         emitter = WSEmitter(websocket)
-
         await emitter.connection_established(session_id)
 
-        session = await self.session_manager.get_session(
-            app_name="my_agent_app",
+        # Base session (uploads, connection state ONLY)
+        await self.session_manager.ensure_session(
             user_id=user_id,
             session_id=session_id,
         )
-
-        if not session:
-            session = await self.session_manager.create_session(
-                app_name="my_agent_app",
-                user_id=user_id,
-                session_id=session_id,
-            )
+        self.session_manager.mark_connected(session_id)
 
         processor = EventProcessor(
             emitter,
@@ -52,95 +47,90 @@ class WebSocketHandler:
             self.file_service,
         )
 
-        # 🔥 GLOBAL IDLE HEARTBEAT (keeps connection alive)
-        heartbeat_running = True
-
-        async def idle_heartbeat():
-            while heartbeat_running:
-                await asyncio.sleep(15)
-                try:
-                    await emitter.status("heartbeat")  # silent ping
-                except:
-                    break
-
-        hb_task = asyncio.create_task(idle_heartbeat())
-
         try:
             while True:
-                try:
-                    raw = await websocket.receive_text()
-                except WebSocketDisconnect:
-                    print("🔌 Client disconnected")
-                    break
+                raw = await websocket.receive_text()
 
                 try:
                     obj = json.loads(raw)
-                    prompt = (obj.get("prompt") or "").strip()
-                except:
+                    prompt = (obj.get("prompt") or obj.get("content") or "").strip()
+                except Exception:
                     prompt = raw.strip()
 
                 if not prompt:
                     continue
 
-                workflow = await self.workflow.start_workflow(user_id)
-
-                await emitter.status("turn_started",message="🛞 Processing request...")
-
-                user_msg = Content(role="user", parts=[Part(text=prompt)])
-
-                context = {
-                    "workflow_id": workflow.id,
-                    "session_id": session_id,
-                    "prompt": prompt,
-                    "current_invocation": None
-                }
-
                 try:
-                    # 🔥 PROCESSING HEARTBEAT (during execution)
-                    last_ping = 0
+                    workflow = await self.workflow.start_workflow(user_id)
 
-                    async def run_with_timeout():
-                        nonlocal last_ping
+                    invocation_ctx = InvocationContext()
 
-                        async for event in self.runner.run_async(
-                            user_id=user_id,
-                            session_id=session.id,
-                            new_message=user_msg,
-                        ):
-                            now = asyncio.get_event_loop().time()
-
-                            # send heartbeat every 10 sec
-                            if now - last_ping > 10:
-                                await emitter.status("processing",message="🧠 Thinking...")
-                                last_ping = now
-
-                            await processor.process(event, context)
-
-                    await asyncio.wait_for(run_with_timeout(), timeout=60)
-
-                except asyncio.TimeoutError:
-                    await emitter.bot_message("⏱️ Request timed out. Try again.")
-                    print("⚠️ Runner timeout")
-
-                except Exception as e:
-                    print("🔥 ERROR:", e)
-                    await emitter.bot_message("❌ Something went wrong while processing your request.")
-
-                # complete invocation
-                if context["current_invocation"]:
-                    await self.agent_service.complete_invocation(
-                        context["current_invocation"],
-                        "completed"
+                    root_invocation = await self.agent_service.start_root_invocation(
+                        workflow.id,
+                        session_id,
+                        prompt,
                     )
 
-                # ✅ signal end of response
-                await emitter.done()
+                    invocation_ctx.invocation_id = root_invocation.id
+                    invocation_ctx.agent_name = "Cortex"
+                    invocation_ctx.agent_session_id = f"{session_id}::Cortex"
 
-        finally:
-            # 🔥 CLEANUP HEARTBEAT
-            heartbeat_running = False
-            hb_task.cancel()
-            try:
-                await hb_task
-            except:
-                pass
+                    context = {
+                        "workflow_id": workflow.id,
+                        "session_id": session_id,
+                        "prompt": prompt,
+                        "invocation_ctx": invocation_ctx,
+                    }
+
+                    await emitter.status("turn_started")
+
+                    parts = [Part(text=prompt)]
+                    parts = await self.session_manager.attach_last_upload(
+                        parts,
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+
+                    user_msg = Content(role="user", parts=parts)
+
+                    # ✅ NEW per-turn session (CRITICAL FIX)
+                    turn_session_id = f"{session_id}::turn::{uuid.uuid4()}"
+                    await self.session_manager.create_session(
+                        user_id=user_id,
+                        session_id=turn_session_id,
+                    )
+
+                    async for event in self.runner.run_async(
+                        user_id=user_id,
+                        session_id=turn_session_id,
+                        new_message=user_msg,
+                    ):
+
+                        meta = getattr(event, "custom_metadata", None)
+                        if isinstance(meta, dict):
+                            progress = meta.get("a2a:progress")
+                            if isinstance(progress, dict):
+                                await emitter.task_update(**progress)
+                                continue
+
+                        await processor.process(event, context)
+
+                    ic = context["invocation_ctx"]
+                    if ic.invocation_id:
+                        await self.agent_service.complete_invocation(
+                            ic.invocation_id,
+                            ic.buffer,
+                        )
+
+                    await self.workflow.complete_workflow(workflow.id)
+                    await emitter.done()
+
+                except Exception as e:
+                    logger.exception("🔥 WS processing error")
+                    await emitter.bot_message(
+                        f"❌ ERROR: {type(e).__name__}: {str(e)}"
+                    )
+
+        except WebSocketDisconnect:
+            self.session_manager.mark_disconnected(session_id)
+            logger.info("🔌 Client disconnected")

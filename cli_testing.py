@@ -10,12 +10,12 @@ import uuid
 console = Console()
 
 BASE_URL = "http://192.168.1.5:8000"
+WS_BASE = "ws://192.168.1.5:8000"
 ADMIN_TOKEN = os.getenv("SECRET_KEY", "super-secret")
 
-
-# ----------------------------
+# ------------------------------------------------------
 # API HELPERS
-# ----------------------------
+# ------------------------------------------------------
 
 async def add_agent(name, host, port):
     async with httpx.AsyncClient() as client:
@@ -52,7 +52,6 @@ async def list_agents():
         data = res.json()
 
         console.print("\n📡 Active Agents:", style="bold cyan")
-
         if not data:
             console.print("No active agents", style="yellow")
             return
@@ -61,34 +60,42 @@ async def list_agents():
             console.print(f"- {agent['name']} ({agent['host']}:{agent['port']})")
 
 
-async def upload_file(path):
+async def upload_file(path: str, session_id: str):
     if not os.path.exists(path):
         console.print("❌ File not found", style="red")
         return
 
     async with httpx.AsyncClient() as client:
         with open(path, "rb") as f:
-            files = {"files": (os.path.basename(path), f)}
-            res = await client.post(f"{BASE_URL}/upload/", files=files)
+            files = {
+                "files": (os.path.basename(path), f)
+            }
+            data = {
+                "session_id": session_id
+            }
 
-        console.print(f"📁 Uploaded: {res.json()}")
+            res = await client.post(
+                f"{BASE_URL}/upload/",
+                files=files,
+                data=data,
+            )
+
+    console.print(f"📁 Uploaded: {res.json()}", style="green")
 
 
-# ----------------------------
-# CHAT LOOP (CORE LOGIC)
-# ----------------------------
+# ------------------------------------------------------
+# CHAT LOOP (USES SAME SESSION ID)
+# ------------------------------------------------------
 
-async def chat_loop(ws):
+async def chat_loop(ws, session_id: str):
 
     while True:
         user_input = Prompt.ask("[bold yellow]You[/bold yellow]")
 
-        # EXIT
-        if user_input.lower() in ["exit", "quit", "bye"]:
+        if user_input.lower() in ("exit", "quit", "bye"):
             console.print("👋 Goodbye!", style="cyan")
             return
 
-        # COMMANDS
         if user_input.startswith("/"):
             parts = user_input.split()
 
@@ -100,117 +107,83 @@ async def chat_loop(ws):
 /list
 /upload <file_path>
 /exit
-                """)
+""")
                 continue
 
-            elif parts[0] == "/add" and len(parts) == 4:
+            if parts[0] == "/add" and len(parts) == 4:
                 await add_agent(parts[1], parts[2], parts[3])
                 continue
 
-            elif parts[0] == "/remove" and len(parts) == 2:
+            if parts[0] == "/remove" and len(parts) == 2:
                 await remove_agent(parts[1])
                 continue
 
-            elif parts[0] == "/list":
+            if parts[0] == "/list":
                 await list_agents()
                 continue
 
-            elif parts[0] == "/upload" and len(parts) == 2:
-                await upload_file(parts[1])
+            if parts[0] == "/upload" and len(parts) == 2:
+                await upload_file(parts[1], session_id)
                 continue
 
-            else:
-                console.print("❌ Invalid command", style="red")
-                continue
+            console.print("❌ Invalid command", style="red")
+            continue
 
+        # ----------------------
         # SEND MESSAGE
+        # ----------------------
         payload = {"prompt": user_input}
 
-        try:
-            await ws.send(json.dumps(payload))
-        except websockets.exceptions.ConnectionClosed:
-            console.print("⚠️ Connection lost", style="yellow")
-            raise  # handled in outer loop
-
-        console.print("\n[bold green]Bot[/bold green]: ", end="")
-
-        connection_broken = False
+        await ws.send(json.dumps(payload))
+        console.print("\n[bold green]Bot[/bold green]:")
 
         while True:
-            try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=120)
-                data = json.loads(msg)
+            msg = await ws.recv()
+            data = json.loads(msg)
 
-                # DONE
-                if data.get("stage") == "done" or data.get("type") == "done":
-                    console.print()
-                    console.print("-" * 50)
-                    break
-
-                # MESSAGE
-                elif data.get("type") == "message":
-                    console.print(data.get("content", ""), end="")
-
-                # STATUS
-                elif data.get("type") == "status":
-                    if data.get("message"):
-                        console.print(f"\n⚙️ {data.get('message')}")
-
-                # FILE
-                elif data.get("type") == "file_processed":
-                    console.print(f"\n📁 Files: {data.get('files')}")
-
-            except asyncio.TimeoutError:
-                console.print("\n⏱️ Response timeout", style="yellow")
-                connection_broken = True
+            if data.get("type") == "done" or data.get("stage") == "done":
+                console.print("\n" + "-" * 60)
                 break
 
-            except websockets.exceptions.ConnectionClosed:
-                console.print("\n⚠️ Connection closed by server", style="yellow")
-                connection_broken = True
-                break
+            if data.get("type") == "message":
+                console.print(data.get("content", ""), end="")
 
-            except Exception as e:
-                console.print(f"\n❌ Error: {e}", style="red")
-                connection_broken = True
-                break
+            elif data.get("type") == "status":
+                if data.get("message"):
+                    console.print(f"\n⚙️ {data['message']}")
 
-        if connection_broken:
-            raise Exception("Reconnect required")
+            elif data.get("type") == "file_processed":
+                console.print(f"\n📁 Files ready: {data.get('files')}")
 
 
-# ----------------------------
-# MAIN CHAT (RECONNECT LOOP)
-# ----------------------------
+# ------------------------------------------------------
+# MAIN LOOP (SESSION FIX HERE)
+# ------------------------------------------------------
 
 async def chat():
 
-    while True:
-        session_id = str(uuid.uuid4())
-        WS_URL = f"ws://192.168.1.5:8000/ws/{session_id}"
+    # ✅ ONE session_id for BOTH upload and websocket
+    session_id = str(uuid.uuid4())
 
-        try:
-            async with websockets.connect(
-                WS_URL,
-                open_timeout=20,
-                ping_interval=20,
-                ping_timeout=60
-            ) as ws:
+    ws_url = f"{WS_BASE}/ws/{session_id}"
 
-                console.print("🤖 Connected to Orchestrator", style="bold green")
-                console.print("Type /help for commands\n")
+    async with websockets.connect(
+        ws_url,
+        open_timeout=20,
+        ping_interval=20,
+        ping_timeout=60,
+    ) as ws:
 
-                await chat_loop(ws)
+        console.print("🤖 Connected to Orchestrator", style="bold green")
+        console.print(f"🧠 Session ID: {session_id}", style="dim")
+        console.print("Type /help for commands\n")
 
-        except Exception as e:
-            console.print(f"⚠️ Connection error: {e}", style="yellow")
-            console.print("🔄 Reconnecting in 2 sec...\n", style="yellow")
-            await asyncio.sleep(2)
+        await chat_loop(ws, session_id)
 
 
-# ----------------------------
+# ------------------------------------------------------
 # ENTRY
-# ----------------------------
+# ------------------------------------------------------
 
 if __name__ == "__main__":
     try:
