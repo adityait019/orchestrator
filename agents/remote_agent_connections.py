@@ -1,5 +1,5 @@
 
-# agents/display_files_remote_a2a_agent.py
+# agents/remote_agent_connections.py
 
 import logging
 from urllib.parse import urlparse
@@ -11,6 +11,7 @@ from typing import Dict , List,Any,Optional
 from a2a.client import A2AClient
 from utils.agent_card_extractor import extract_description_capabilities_skills
 from a2a.client.card_resolver import A2ACardResolver
+
 from pydantic import PrivateAttr
 import json
 import re
@@ -225,12 +226,12 @@ class RemoteServerManager(RemoteA2aAgent):
 
         content = getattr(event, "content", None)
         parts = getattr(content, "parts", None) if content else None
+
         if not parts:
             return event
 
         ui_files = []
         keep_text_parts = []
-
         token_usage_meta=None
 
         for p in parts:

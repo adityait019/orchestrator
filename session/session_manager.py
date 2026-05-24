@@ -6,37 +6,51 @@ from google.adk.sessions.base_session_service import GetSessionConfig
 from typing import Dict, Optional
 import uuid
 import mimetypes
+from a2a.types import Message
+
+
+
+# In SessionManager
+
+import json
+from google.genai.types import Part
+
+META_TOOL_TOKEN_PREFIX = "[META:TOOL_TOKENS]"
+
+
 
 
 class SessionManager:
     """
     Manages:
     - ADK persistent sessions (DatabaseSessionService)
-    - In-memory active session mirror for WebSocket workflows
+    - In-memory active session mirror (PER USER + SESSION)
     """
 
     def __init__(self, db_url: str, app_name: str = "my_agent_app"):
         self.session_service = DatabaseSessionService(db_url=db_url)
         self.app_name = app_name
 
-        # In-memory mirror:
-        # session_id -> {
-        #   "connected": bool,
-        #   "last_upload": dict,
-        # }
+        # Keyed by: f"{user_id}::{session_id}"
         self.active_sessions: Dict[str, Dict] = {}
 
-    # ------------------------------------------------------------------
+    # -----------------------------
+    # Internal helpers
+    # -----------------------------
+
+    def _key(self, user_id: str, session_id: str) -> str:
+        return f"{user_id}::{session_id}"
+
+    # -----------------------------
     # Core session helpers
-    # ------------------------------------------------------------------
+    # -----------------------------
 
     async def get_session(self, user_id: str, session_id: str):
-        config=GetSessionConfig(num_recent_events=0)
         return await self.session_service.get_session(
             app_name=self.app_name,
             user_id=user_id,
             session_id=session_id,
-            config=config,
+            config=GetSessionConfig(num_recent_events=1),
         )
 
     async def create_session(
@@ -45,40 +59,27 @@ class SessionManager:
         session_id: str,
         state: Optional[dict] = None,
     ):
-        session = await self.session_service.create_session(
+        return await self.session_service.create_session(
             app_name=self.app_name,
             user_id=user_id,
             session_id=session_id,
             state=state or {},
         )
-        return session
 
     async def ensure_session(self, user_id: str, session_id: str):
-        """
-        Ensure session exists both in DB and memory.
-        """
         session = await self.get_session(user_id, session_id)
-
         if not session:
-            session = await self.create_session(
-                user_id=user_id,
-                session_id=session_id,
-            )
+            session = await self.create_session(user_id, session_id)
 
-        # Ensure in-memory mirror exists
         self.active_sessions.setdefault(
-            session_id,
-            {
-                "connected": True,
-                "last_upload": None,
-            }
+            self._key(user_id, session_id),
+            {"connected": True, "last_upload": None},
         )
-
         return session
 
-    # ------------------------------------------------------------------
-    # Upload tracking (CRITICAL)
-    # ------------------------------------------------------------------
+    # -----------------------------
+    # Upload tracking
+    # -----------------------------
 
     async def set_last_upload(
         self,
@@ -86,51 +87,35 @@ class SessionManager:
         session_id: str,
         upload_details: dict,
     ):
-        """
-        Persist last upload to:
-        - In-memory mirror
-        - ADK session state
-        """
+        key = self._key(user_id, session_id)
 
-        # ---- memory mirror ----
-        self.active_sessions.setdefault(session_id, {})
-        self.active_sessions[session_id]["last_upload"] = upload_details
+        self.active_sessions.setdefault(key, {})
+        self.active_sessions[key]["last_upload"] = upload_details
 
-        # ---- persistent state ----
         session = await self.ensure_session(user_id, session_id)
 
         evt = Event(
             invocation_id=str(uuid.uuid4()),
             author="system",
             actions=EventActions(
-                state_delta={
-                    "session": {
-                        "last_upload": upload_details
-                    }
-                }
+                state_delta={"session": {"last_upload": upload_details}}
             ),
             partial=False,
         )
 
         await self.session_service.append_event(session, evt)
 
-    # ------------------------------------------------------------------
-    # Attachment logic (USED BY WEBSOCKET + HTTP)
-    # ------------------------------------------------------------------
+    # -----------------------------
+    # Attachment logic
+    # -----------------------------
 
-    async def get_last_upload(self, user_id: str, session_id: str) -> Optional[dict]:
-        """
-        Priority:
-        1. In-memory session
-        2. DB session state
-        """
+    async def consume_last_upload(self, user_id: str, session_id: str):
+        key = self._key(user_id, session_id)
 
-        # 1️⃣ Memory first (fast path – WebSocket)
-        mirror = self.active_sessions.get(session_id)
+        mirror = self.active_sessions.get(key)
         if mirror and mirror.get("last_upload"):
-            return mirror["last_upload"]
+            return mirror.pop("last_upload")
 
-        # 2️⃣ DB fallback
         session = await self.get_session(user_id, session_id)
         if session and session.state:
             return session.state.get("session", {}).get("last_upload")
@@ -138,24 +123,18 @@ class SessionManager:
         return None
 
     async def attach_last_upload(self, parts: list[Part], user_id: str, session_id: str):
-        """
-        Attach uploaded files to a user prompt.
-        """
-
         last_upload = await self.consume_last_upload(user_id, session_id)
         if not last_upload:
             return parts
 
         for url in last_upload.get("file_urls", []):
             clean_url = url.split("?")[0]
-            mime_type, _ = mimetypes.guess_type(clean_url)
-            mime_type = mime_type or "application/octet-stream"
-
+            mime, _ = mimetypes.guess_type(clean_url)
             parts.append(
                 Part(
                     file_data=FileData(
                         file_uri=url,
-                        mime_type=mime_type
+                        mime_type=mime or "application/octet-stream",
                     )
                 )
             )
@@ -163,25 +142,49 @@ class SessionManager:
         return parts
 
 
-    async def consume_last_upload(self, user_id: str, session_id: str):
-        mirror = self.active_sessions.get(session_id)
-        if mirror and mirror.get("last_upload"):
-            return mirror.pop("last_upload")
 
-        session = await self.get_session(user_id, session_id)
-        if session and session.state:
-            return session.state.get("session", {}).pop("last_upload", None)
+    async def attach_tool_tokens(
+        self,
+        parts: list[Part],
+        payload: dict,  # {access_token, refresh_token}
+        session_id:str,
+    ):
+        """
+        TEMPORARY / TESTING ONLY.
 
-        return None
+        Attaches tool tokens as a META text Part so they reach the remote agent.
+        The agent is responsible for:
+        - extracting
+        - forwarding to the tool
+        - NOT emitting them back as normal text
+        """
 
-    # ------------------------------------------------------------------
-    # WebSocket lifecycle helpers
-    # ------------------------------------------------------------------
+        if not payload:
+            return parts
 
-    def mark_connected(self, session_id: str):
-        self.active_sessions.setdefault(session_id, {})
-        self.active_sessions[session_id]["connected"] = True
+        meta_blob = {
+            "type": "tool_credentials",
+            "access_token": payload.get("access_token"),
+            "refresh_token": payload.get("refresh_token"),
+        }
 
-    def mark_disconnected(self, session_id: str):
-        if session_id in self.active_sessions:
-            self.active_sessions[session_id]["connected"] = False
+        parts.append(
+            Part(
+                text=f"{META_TOOL_TOKEN_PREFIX} {json.dumps(meta_blob)}"
+            )
+        )
+
+        return parts
+    # -----------------------------
+    # WebSocket lifecycle
+    # -----------------------------
+
+    def mark_connected(self, user_id: str, session_id: str):
+        self.active_sessions.setdefault(
+            self._key(user_id, session_id), {}
+        )["connected"] = True
+
+    def mark_disconnected(self, user_id: str, session_id: str):
+        key = self._key(user_id, session_id)
+        if key in self.active_sessions:
+            self.active_sessions[key]["connected"] = False

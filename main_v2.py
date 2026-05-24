@@ -1,9 +1,37 @@
 # main.py
+import logging
+from logging.handlers import RotatingFileHandler
+
+LOG_FILE = "root_agent.log"
+
+handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=10 * 1024 * 1024,  # 10 MB
+    backupCount=5,
+    encoding="utf-8"
+)
+
+formatter = logging.Formatter(
+    "CorteX:%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+)
+
+handler.setFormatter(formatter)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+root_logger.addHandler(handler)
+
+
+# ---------- ✅ FIX 3: Silence noisy libraries ----------
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
-import logging
+# import logging
 import os
 
 from core.runner_factory import create_runner
@@ -12,7 +40,7 @@ from routers.agent_registry import router as agent_router
 from routers.upload_router import router as upload_router
 from routers.file_router import router as file_router
 from routers.run_agent_router import router as run_agent_router
-
+from routers.dashboard_router import router as admin_router
 from websocket.websocket_handler import WebSocketHandler
 
 from services.workflow_service import WorkflowService
@@ -27,7 +55,11 @@ from database.session import AsyncSessionLocal
 from agent_registry.health_monitor import health_check_loop
 from agents.agent import root_agent
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
+
+
+
+
 
 health_task: asyncio.Task | None = None
 sync_task: asyncio.Task | None = None
@@ -37,7 +69,7 @@ sync_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI):
     global health_task, sync_task
 
-    logger.info("🚀 FastAPI startup")
+    root_logger.info("🚀 FastAPI startup")
 
     health_task = asyncio.create_task(health_check_loop())
     sync_task = asyncio.create_task(agent_sync_loop())
@@ -47,7 +79,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("🛑 FastAPI shutdown")
+    root_logger.info("🛑 FastAPI shutdown")
     for t in (health_task, sync_task):
         if t:
             t.cancel()
@@ -68,7 +100,7 @@ app.include_router(agent_router)
 app.include_router(upload_router)
 app.include_router(file_router)
 app.include_router(run_agent_router)
-
+app.include_router(admin_router)
 # Core services
 session_manager = SessionManager(db_url=os.getenv("DATABASE_URL","not-present"),app_name=APP_NAME)
 
@@ -95,9 +127,11 @@ ws_handler = WebSocketHandler(
 )
 
 
+
 @app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    await ws_handler.handle(websocket, session_id, DEFAULT_USER)
+async def websocket_endpoint(websocket: WebSocket, session_id: str,user_id=DEFAULT_USER):    
+    
+    await ws_handler.handle(websocket, session_id,user_id=DEFAULT_USER)
 
 
 

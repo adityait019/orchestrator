@@ -1,0 +1,37 @@
+[
+    {
+        "tenant_id": "tenant_001",
+        "users": [
+            {
+                "user_id": "alice",
+                "password": "alicepass",
+                "role": "admin"
+            },
+            {
+                "user_id": "bob",
+                "password": "bobpass",
+                "role": "editor"
+            }
+        ]
+    },
+    {
+        "tenant_id": "tenant_002",
+        "users": [
+            {
+                "user_id": "charlie",
+                "password": "charliepass",
+                "role": "viewer"
+            }
+        ]
+    },
+    {
+        "tenant_id": "testing_tenant_01",
+        "users": [
+            {
+                "user_id": "adityait019",
+                "password": "abcd123",
+                "role": "user"
+            }
+        ]
+    }
+]

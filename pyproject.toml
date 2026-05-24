@@ -10,6 +10,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "google-adk>=1.25.0",
     "httpx>=0.28.1",
+    "isort>=8.0.1",
     "litellm>=1.80.13",
     "nest-asyncio>=1.6.0",
     "python-multipart>=0.0.20",

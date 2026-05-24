@@ -7,11 +7,7 @@ import logging
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-logging.basicConfig(
-    level=logging.INFO,filemode='a',filename="root_agent.log",
-    format="CorteX:%(asctime)s - %(levelname)s - %(message)s"
-)
-
+logger = logging.getLogger(__name__)
 
 
 

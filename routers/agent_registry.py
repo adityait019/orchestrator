@@ -15,7 +15,7 @@ import asyncio
 
 agent_lock = asyncio.Lock()
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -175,7 +175,9 @@ async def activate_agent(
         "message": f"Agent '{agent_name}' activated successfully"
     }
 
-@router.get("/total_agents",response_model=list[AgentResponse])
-async def get_total_agents(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(AgentRegistry))
-    return result.scalars().all()        
+@router.get("/total_agents", response_model=list[AgentResponse])
+async def get_all_agents(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(AgentRegistry)
+    )
+    return result.scalars().all()

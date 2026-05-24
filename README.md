@@ -237,7 +237,7 @@ PostgreSQL (Tracking & Registry)
 
 ---
 
-## 🧱 Execution Tracking (Three-Layer Model)
+
 
 ## 🧱 Execution Tracking (Three-Layer Model)
 
@@ -353,85 +353,27 @@ CREATE TABLE agent_invocations (
 ### User Request → Agent Response
 
 ```
-1. Frontend sends WebSocket message:
-   {
-     "prompt": "Classify and score this document",
-     "files": [{ "name": "doc.pdf", "signed_url": "..." }]
-   }
-
-2. WebSocketHandler.handle() receives message
-   → EventProcessor processes the message
-   → Delegates to WorkflowService
-
-3. WorkflowService.start_workflow(user_id)
-   → Creates: OrchestrationSession {
-       session_id=UUID,
-       user_id=user_id,
-       status='active',
-       created_at=NOW()
-     }
-   → Returns workflow object
-
-4. AgentExecutionService.start_root_invocation(workflow.id, session_id, prompt)
-   → Creates: AgentInvocation {
-       orchestration_session_id=workflow.id,
-       agent_name='Cortex',
-       step_order=1,
-       status='working',
-       input_payload={'prompt': prompt},
-       started_at=NOW()
-     }
-
-5. Runner.run_async(user_id, session_id, Content(text=prompt))
-   → SessionManager ensures ADK session exists
-   → AgentLoader.load_active_agents() queries DB for healthy agents
-   → Injects agents into Cortex.sub_agents list
-   → Cortex LLM processes intent and selects sub-agents
-
-6. Cortex Decision & Routing:
-   - Analyzes prompt: "Route to classification_bot, then scoring_agent"
-   - For each selected sub-agent:
-     → AgentExecutionService.start_invocation() creates AgentInvocation
-     → Remote agent connection (A2A protocol) via infrastructure/a2a_factory.py
-     → JSON-RPC call to agent's HTTP endpoint
-     → Streaming response handling
-
-7. Sub-agent Execution:
-   ✓ AgentInvocation created: {
-       agent_name='classification_bot',
-       step_order=2,
-       status='working'
-     }
-   ✓ A2A call: POST http://agent-host:port/ with JSON-RPC payload
-   ✓ Agent processes request and streams back results
-   ✓ AgentInvocation updated: { status='completed', output_payload=result }
-
-8. Real-time Event Streaming:
-   → WSEmitter sends WebSocket events to frontend:
-     { "type": "invocation_started", "agent": "classification_bot", "step": 2 }
-     { "type": "tool_progress", "detail": "extract_text" }
-     { "type": "artifact", "signed_url": "https://..." }
-     { "type": "invocation_completed", "status": "completed" }
-
-9. Workflow Completion:
-   → WorkflowService.complete_workflow(workflow_id)
-   → Updates: OrchestrationSession {
-       status='completed',
-       completed_at=NOW()
-     }
-
-10. Final Response:
-    → Frontend receives: {
-        "type": "workflow_completed",
-        "workflow_id": "...",
-        "final_response": "Classification complete..."
-      }
-
-11. Session Persistence:
-    → ADK session maintains conversation context for next prompt
-    → WebSocket session_id tracks transport connection
-    → Workflow UUID provides execution isolation
+1. Client sends WebSocket message with prompt and optionally uploaded files
+2. WebSocketHandler authenticates client via `access_token` through tenant `/auth/me`
+3. WorkflowService creates an OrchestrationSession (workflow UUID)
+4. AgentExecutionService creates root AgentInvocation for Cortex agent (step_order=1)
+5. Runner executes Cortex agent with user's prompt and attaches uploaded files as file_data parts
+6. Cortex dynamically loads active and healthy sub-agents from registry
+7. Cortex routes prompt to sub-agents:
+     - For each sub-agent, AgentExecutionService creates AgentInvocation with incremented step_order
+     - JSON-RPC calls are made to remote agents over A2A protocol
+     - Streaming responses handled in real-time
+8. Artifact Management:
+     - When agents produce file artifacts with URLs, EventProcessor fetches them securely
+     - ArtifactService stores metadata, ownership (tenant/user/session), and persists files
+     - Signed URLs are generated for secure, time-limited access
+     - Artifacts are forwarded as opaque file references to other agents or clients
+     - WebSocket client is notified with artifact events including download links
+9. Status Updates and tool progress streamed to the frontend via WSEmitter
+10. WorkflowService marks orchestration workflow completed upon finish
+11. ADK sessions keep conversation context for future messages
 ```
+
 
 ---
 
@@ -1149,7 +1091,7 @@ kubectl logs -n orchestrator deployment/orchestrator
 
 1. **Clone & Setup**
    ```bash
-   git clone https://github.com/adityait019/orchestrator
+   git clone https://github.com/git-repos/orchestrator
    cd orchestrator
    python -m venv .venv && source .venv/bin/activate
    pip install -e ".[dev]"
@@ -1226,7 +1168,7 @@ MIT — see [LICENSE](LICENSE).
 ## 👤 Authors
 
 - **Created**: 2026
-- **Maintainer**: adityait019
+- **Maintainer**: Aditya Kumar BFSI CTO kolkata
 - **Contributors**: Welcome! See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
@@ -1253,6 +1195,8 @@ MIT — see [LICENSE](LICENSE).
 @startuml AgenticOrchestratorArchitecture
 !pragma teoz true
 
+left to right direction
+skinparam linetype ortho
 title Agentic AI Orchestrator — High-Level Architecture
 
 skinparam backgroundColor #FFFFFF

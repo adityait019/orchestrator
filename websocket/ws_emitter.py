@@ -27,6 +27,7 @@ class WSEmitter:
             "stage": stage
         }
         payload.update(extra)
+        logging.info(f"[EMITTER: STATUS]: STAGE {stage} EXTRA: {extra}")
         await self.ws.send_json(payload)
 
     # ✅ OPTIONAL (recommended)
@@ -34,19 +35,21 @@ class WSEmitter:
         """
         Emits A2A progress/task updates.
         """
+        logging.info(f"[EMITTER: TASK_UPDATE]: {extra}")
         await self.status("progress_update", **extra)
 
     async def tool_call(self, name, args):
+        logging.info(f"[EMITTER: STATUS]: NAME{name} EXTRA:{args}")
 
         await self.ws.send_json({
-            "type": "tool_call",
+            "type": "tool_call_type",
             "name": name,
             "args": args
         })
 
     async def tool_result(self, name, response):
         await self.ws.send_json({
-            "type": "tool_result",
+            "type": "tool_result_type",
             "name": name,
             "response": response
         })
@@ -68,7 +71,7 @@ class WSEmitter:
     async def done(self):
         from datetime import datetime
         await self.ws.send_json({
-            "type": "status",
+            "type": "status_type",
             "stage": "done",
             "ts": datetime.now().isoformat()
         })

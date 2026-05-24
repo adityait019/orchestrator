@@ -1,5 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
+    ForeignKeyConstraint,
     String,
     Integer,
     Text,
@@ -268,23 +269,112 @@ class AgentEvent(Base):
 # 6️⃣ Artifacts (Generated files)
 # -------------------------------------------------------------------
 
+# class Artifact(Base):
+#     __tablename__ = "artifacts"
+
+#     id: Mapped[int] = mapped_column(primary_key=True)
+
+#     invocation_id: Mapped[int] = mapped_column(
+#         ForeignKey("agent_invocations.id"),
+#         index=True
+#     )
+
+#     file_id: Mapped[str] = mapped_column(String(255))
+#     filename: Mapped[str] = mapped_column(String(255))
+#     url: Mapped[str] = mapped_column(String(500))
+#     path: Mapped[str]= mapped_column(String(500))
+#     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+#     invocation: Mapped["AgentInvocation"] = relationship(
+#         back_populates="artifacts"
+#     )
+
+
+# -------------------------------------------------------------------
+# 6️⃣ Artifacts (Generated + Uploaded files)
+# -------------------------------------------------------------------
+
 class Artifact(Base):
     __tablename__ = "artifacts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    invocation_id: Mapped[int] = mapped_column(
+    # ✅ Ownership scope
+    tenant_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    session_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+
+    # ✅ Agent context (optional for uploads)
+    invocation_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_invocations.id"),
-        index=True
+        index=True,
+        nullable=True,
     )
 
-    file_id: Mapped[str] = mapped_column(String(255))
-    filename: Mapped[str] = mapped_column(String(255))
-    url: Mapped[str] = mapped_column(String(500))
-    path: Mapped[str]= mapped_column(String(500))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # ✅ File identity
+    file_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
 
+    # ✅ Storage
+    path: Mapped[str] = mapped_column(String(500), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    # ✅ Metadata
+    mime_type: Mapped[str | None] = mapped_column(String(100))
+    file_size: Mapped[int | None] = mapped_column(Integer)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Relationship
     invocation: Mapped["AgentInvocation"] = relationship(
         back_populates="artifacts"
     )
 
+# -------------------------------------------------------------------
+# 7️⃣ Google ADK Sessions - READ ONLY MAPPING
+# -------------------------------------------------------------------
+# These tables are created and managed by Google ADK.
+# Do NOT manually create/update/delete/migrate these tables.
+# We only map them here so admin APIs can read from them.
+
+class ADKSession(Base):
+    __tablename__ = "sessions"
+    __table_args__ = {"info": {"owner": "google_adk", "readonly": True}}
+
+    app_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    create_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    update_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+# -------------------------------------------------------------------
+# 8️⃣ Google ADK Events - READ ONLY MAPPING
+# -------------------------------------------------------------------
+
+class ADKEvent(Base):
+    __tablename__ = "events"
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["app_name", "user_id", "session_id"],
+            ["sessions.app_name", "sessions.user_id", "sessions.id"],
+            ondelete="CASCADE",
+        ),
+        {"info": {"owner": "google_adk", "readonly": True}},
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    app_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+
+    invocation_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    event_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
