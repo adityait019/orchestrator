@@ -127,44 +127,6 @@ class OrchestrationSession(Base):
 # 3️⃣ Agent Invocation (Each sub-agent execution)
 # -------------------------------------------------------------------
 
-# class AgentInvocation(Base):
-#     __tablename__ = "agent_invocations"
-
-#     id: Mapped[int] = mapped_column(primary_key=True)
-
-#     orchestration_session_id: Mapped[int] = mapped_column(
-#         ForeignKey("orchestration_sessions.id"),
-#         index=True
-#     )
-
-#     agent_name: Mapped[str] = mapped_column(String(150), index=True)
-#     agent_session_id: Mapped[str] = mapped_column(String(255), index=True)
-
-#     step_order: Mapped[int] = mapped_column(Integer)
-
-#     status: Mapped[str] = mapped_column(String(50))  # queued, working, completed, failed
-
-#     input_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-#     output_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-#     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-#     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-#     # Relationships
-#     orchestration_session: Mapped["OrchestrationSession"] = relationship(
-#         back_populates="invocations"
-#     )
-
-#     events: Mapped[list["AgentEvent"]] = relationship(
-#         back_populates="invocation",
-#         cascade="all, delete-orphan"
-#     )
-
-#     artifacts: Mapped[list["Artifact"]] = relationship(
-#         back_populates="invocation",
-#         cascade="all, delete-orphan"
-#     )
-
 class AgentInvocation(Base):
     __tablename__ = "agent_invocations"
 
@@ -182,8 +144,8 @@ class AgentInvocation(Base):
 
     status: Mapped[str] = mapped_column(String(50))
 
-    input_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    output_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    output_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

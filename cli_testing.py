@@ -9,8 +9,8 @@ import uuid
 
 console = Console()
 
-BASE_URL = "http://192.168.1.5:8000"
-WS_BASE = "ws://192.168.1.5:8000"
+BASE_URL = "http://192.168.1.14:8000"
+WS_BASE = "ws://192.168.1.14:8000"
 ADMIN_TOKEN = os.getenv("SECRET_KEY", "super-secret")
 
 # ------------------------------------------------------

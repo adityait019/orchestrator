@@ -18,3 +18,4 @@ root_agent.log
 session.db
 .adk
 a2a-server-builder
+migrations
