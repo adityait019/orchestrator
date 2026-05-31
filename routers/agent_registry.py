@@ -181,3 +181,37 @@ async def get_all_agents(db: AsyncSession = Depends(get_db)):
         select(AgentRegistry)
     )
     return result.scalars().all()
+
+
+
+@router.delete("/agent_registry/{agent_name}")
+async def delete_agent(
+    agent_name: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_admin_token),
+):
+    # Fetch agent
+    result = await db.execute(
+        select(AgentRegistry).where(AgentRegistry.name == agent_name)
+    )
+    agent = result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Remove from orchestrator (in-memory)
+    async with agent_lock:
+        root_agent.sub_agents = [
+            a for a in root_agent.sub_agents
+            if a.name != agent_name
+        ]
+
+    # Permanently delete from DB
+    await db.delete(agent)
+    await db.commit()
+
+    logger.info(f"🗑️ Agent '{agent_name}' permanently deleted from database")
+
+    return {
+        "message": f"Agent '{agent_name}' deleted permanently"
+    }

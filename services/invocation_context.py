@@ -21,6 +21,9 @@ class InvocationContext:
 
     # Streaming text buffer (accumulates partial output)
     buffer: str = ""
+    
+    #Structure output payload
+    output_payload: dict | None = None
 
     # Token accounting (optional but useful)
     input_tokens: int = 0

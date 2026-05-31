@@ -41,6 +41,14 @@ from routers.upload_router import router as upload_router
 from routers.file_router import router as file_router
 from routers.run_agent_router import router as run_agent_router
 from routers.dashboard_router import router as admin_router
+from routers.evaluation.overview import router as evaluation_overview_router
+from routers.evaluation.agent_evaluation import router as agent_evaluation_router
+from routers.evaluation.timeseries_matrix import router as timeseries_matrix_router
+from routers.history_router import router as history_router
+
+from api.swagger_ui import router as _swagger_router
+from api.orch_panel import orch_panel_app as _orch_panel_app
+
 from websocket.websocket_handler import WebSocketHandler
 
 from services.workflow_service import WorkflowService
@@ -85,7 +93,7 @@ async def lifespan(app: FastAPI):
             t.cancel()
 
 
-app = FastAPI(title="Orchestrator Agent API", lifespan=lifespan)
+app = FastAPI(title="Orchestrator Agent API", lifespan=lifespan,docs_url=None, redoc_url=None)
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,6 +109,12 @@ app.include_router(upload_router)
 app.include_router(file_router)
 app.include_router(run_agent_router)
 app.include_router(admin_router)
+app.include_router(evaluation_overview_router)
+app.include_router(agent_evaluation_router)
+app.include_router(timeseries_matrix_router)
+app.include_router(history_router)
+app.include_router(_swagger_router, include_in_schema=False)  # Swagger UI with access control
+app.mount("/__ctrl__", _orch_panel_app)  # Internal dashboard (no auth for simplicity)
 # Core services
 session_manager = SessionManager(db_url=os.getenv("DATABASE_URL","not-present"),app_name=APP_NAME)
 
@@ -129,13 +143,6 @@ ws_handler = WebSocketHandler(
 
 
 @app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str,user_id=DEFAULT_USER):    
+async def websocket_endpoint(websocket: WebSocket, session_id: str):    
     
-    await ws_handler.handle(websocket, session_id,user_id=DEFAULT_USER)
-
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="192.168.1.5", port=8000)
+    await ws_handler.handle(websocket, session_id)

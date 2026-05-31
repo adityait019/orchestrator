@@ -18,30 +18,68 @@ class EventProcessor:
         self.artifact_service = artifact_service
         self.file_service = file_service
 
-                # inv.input_tokens=input_tokens
-                # inv.output_tokens=output_tokens
-                # inv.total_tokens=total_tokens
+    def _merge_output_payload(self, ic, payload: dict | None):
+        if not payload:
+            return
+        if ic.output_payload is None:
+            ic.output_payload = payload
+            return
+
+        if not isinstance(ic.output_payload, dict):
+            ic.output_payload = payload
+            return
+
+        merged = dict(ic.output_payload)
+        for key, value in payload.items():
+            if key == "text" and isinstance(value, str):
+                existing = merged.get("text")
+                if isinstance(existing, str):
+                    merged["text"] = existing + value
+                    continue
+            merged[key] = value
+        ic.output_payload = merged
+
     async def _finalize_invocation(self, ctx, *, failed=False, error_msg=None):
         ic = ctx["invocation_ctx"]
         if not ic.invocation_id:
             return
+
         if failed:
-            await self.agent_service.fail_invocation(ic.invocation_id, error_msg or "Invocation failed", ic.input_tokens, ic.output_tokens, ic.total_tokens)
+            await self.agent_service.fail_invocation(
+                ic.invocation_id,
+                error_msg or "Invocation failed",
+                ic.input_tokens,
+                ic.output_tokens,
+                ic.total_tokens,
+            )
         else:
-            await self.agent_service.complete_invocation(ic.invocation_id, ic.buffer, ic.input_tokens, ic.output_tokens, ic.total_tokens)
+            output = ic.output_payload if ic.output_payload is not None else (ic.buffer or None)
+            await self.agent_service.complete_invocation(
+                ic.invocation_id,
+                output,
+                ic.input_tokens,
+                ic.output_tokens,
+                ic.total_tokens,
+            )
+
         # Reset state
         ic.invocation_id = None
         ic.buffer = ""
+        ic.output_payload = None
         ic.input_tokens = ic.output_tokens = ic.total_tokens = 0
 
     async def process(self, event, ctx):
         ic = ctx["invocation_ctx"]
 
-        # Normalize incoming event
+
+
         normalized = normalize_event(event)
+
         logger.debug(
-            "[NORMALIZED EVENT] text=%s files=%s metadata=%s",
-            normalized.text, normalized.files, normalized.metadata
+            "[POST-NORMALIZE] text=%s metadata=%s raw_event=%s",
+            normalized.text,
+            normalized.metadata,
+            type(event)
         )
 
         # Handle explicit model errors first
@@ -62,14 +100,39 @@ class EventProcessor:
 
 
         # ==== A2A TOKEN USAGE (REMOTE AGENTS) ====
+
+
         token_usage = meta.get("token_usage") or meta.get("tool_usage")
+
         if isinstance(token_usage, dict):
-            ic.input_tokens += int(token_usage.get("input_tokens", 0))
-            ic.output_tokens += int(token_usage.get("output_tokens", 0))
-            ic.total_tokens += int(token_usage.get("total_tokens", 0))
-            logger.debug("META KEYS: %s", sorted(list(meta.keys())))
-            logger.debug("TOKEN USAGE meta.token_usage=%s meta.tool_usage=%s",
-                        meta.get("token_usage"), meta.get("tool_usage"))
+
+            input_tokens = int(token_usage.get("input_tokens", 0))
+            output_tokens = int(token_usage.get("output_tokens", 0))
+            total_tokens = int(token_usage.get("total_tokens", 0))
+
+            logger.info(
+                "[TOKEN RECEIVED] agent=%s invocation_id=%s input=%s output=%s total=%s",
+                ic.agent_name,
+                ic.invocation_id,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            )
+
+            # ✅ ✅ SAVE DIRECTLY to correct DB row
+            if ic.invocation_id:
+                await self.agent_service.add_token_usage(
+                    invocation_id=ic.invocation_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                )
+
+            # ✅ aggregation (for UI)
+            ic.input_tokens += input_tokens
+            ic.output_tokens += output_tokens
+            ic.total_tokens += total_tokens
+
             await self.emitter.status(
                 "token_usage",
                 input=ic.input_tokens,
@@ -174,6 +237,7 @@ class EventProcessor:
             if clean_text:
                 logger.info("[NORMALIZED TEXT]: %s", clean_text)
                 ic.buffer += clean_text
+                self._merge_output_payload(ic, {"text": clean_text})
                 await self.emitter.bot_message(clean_text)
 
         # A2A task status updates (unchanged)
@@ -182,15 +246,21 @@ class EventProcessor:
             status = a2a_resp.get("status", {})
             state = (status.get("state") or "").lower()
             message = status.get("message") or status.get("detail") or ""
+            error_text = meta.get("a2a:error_text")
+            error_struct = meta.get("a2a:error")
+
+            if error_text:
+                message = error_text
+            
             await self.emitter.status(
                 "task_update",
                 state=state,
                 message=message or f"🔄 Task {state.replace('_', ' ')}",
             )
             if state == "failed":
-                await self._finalize_invocation(ctx, failed=True, error_msg=message or "Remote agent reported failure")
-                await self.emitter.bot_message("❌ The remote agent reported a failure.")
-                await self.emitter.error_details(status)
+                await self._finalize_invocation(ctx, failed=True, error_msg=error_struct or "Remote agent reported failure")
+                await self.emitter.bot_message(f"{error_struct or '❌ The remote agent reported a failure.'}")
+                await self.emitter.error_details(error_struct or status)
                 return
 
         # File handling (unchanged)
@@ -198,17 +268,17 @@ class EventProcessor:
             urls = []
             for file_url in normalized.files:
                 try:
-                    tenant_id=str(uuid.uuid4())
+                    # tenant_id=str(uuid.uuid4())
                     file_id, filename, path = await fetch_remote_file(str(file_url))
                     signed_url = self.file_service.make_signed_url(
-                        tenant_id=tenant_id,
+                        tenant_id=ctx.get("tenant_id", str(uuid.uuid4())),
                         user_id=ctx["user_id"],
                         session_id=ctx["session_id"],
                         file_id=file_id,
                         filename=filename,
                     )
                     await self.artifact_service.store_artifact(
-                        tenant_id=tenant_id,
+                        tenant_id=ctx.get("tenant_id", str(uuid.uuid4())),
                         user_id=ctx["user_id"],
                         session_id=ctx["session_id"],
                         invocation_id=ic.invocation_id,
@@ -221,6 +291,7 @@ class EventProcessor:
                 except Exception as ex:
                     logger.exception("Failed processing normalized file: %s", ex)
             if urls:
+                self._merge_output_payload(ic, {"files": urls})
                 await self.emitter.status("tool_completed", message="✅ Files processed successfully.")
                 await self.emitter.file_processed(urls)
 
@@ -274,6 +345,8 @@ class EventProcessor:
                     continue
                 if getattr(p, "function_response", None):
                     fr = p.function_response
+                    if fr.response is not None:
+                        self._merge_output_payload(ic, {"function_response": {"name": fr.name, "response": fr.response}})
                     await self.emitter.status("tool_completed", name=fr.name)
                     await self.emitter.tool_result(name=fr.name, response=fr.response or {})
                     continue

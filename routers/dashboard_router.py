@@ -160,7 +160,7 @@ async def get_dashboard_summary(
         func.coalesce(
             func.sum(case((AgentRegistry.is_healthy.is_(False), 1), else_=0)),
             0,
-        ).label("unhealthy"),
+        ).label("unavailable"),
     )
 
     orchestration_stats_query = select(
@@ -207,7 +207,7 @@ async def get_dashboard_summary(
             "active": agent_stats["active"] or 0,
             "inactive": agent_stats["inactive"] or 0,
             "healthy": agent_stats["healthy"] or 0,
-            "unhealthy": agent_stats["unhealthy"] or 0,
+            "unavailable": agent_stats["unavailable"] or 0,
         },
         "orchestration_sessions": {
             "total": orchestration_stats["total"] or 0,
@@ -608,11 +608,11 @@ async def list_orchestration_sessions(
         )
         .outerjoin(
             inv_stats_subq,
-            inv_stats_subq.c.session_db_id == OrchestrationSession.id,
+            inv_stats_subq.c.session_db_id == OrchestrationSession.session_id,
         )
         .outerjoin(
             artifact_stats_subq,
-            artifact_stats_subq.c.session_db_id == OrchestrationSession.id,
+            artifact_stats_subq.c.session_db_id == OrchestrationSession.session_id,
         )
         .order_by(desc(OrchestrationSession.created_at))
     )
@@ -669,7 +669,7 @@ async def get_orchestration_session_detail(
 
     invocations_result = await db.execute(
         select(AgentInvocation)
-        .where(AgentInvocation.orchestration_session_id == session_db_id)
+        .where(AgentInvocation.orchestration_session_id == session.session_id)
         .order_by(asc(AgentInvocation.step_order))
     )
 
@@ -790,7 +790,7 @@ async def get_orchestration_session_detail(
 async def list_invocations(
     agent_name: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
-    orchestration_session_id: Optional[int] = Query(None),
+    orchestration_session_id: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),

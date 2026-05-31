@@ -1,25 +1,36 @@
-# #services/agent_execution_service.py
-
+#services/agent_execution_service.py
 import json
 from datetime import datetime, timezone
 from sqlalchemy import select
 from database.models import AgentInvocation
 
 
+def _normalize_payload(value):
+    """
+    Ensure payload is always JSON-serializable dict
+    (since DB column is JSONB now).
+    """
+    if value is None:
+        return {}
+
+    if isinstance(value, dict):
+        return value
+
+    if isinstance(value, str):
+        return {"text": value}
+
+    # fallback for objects, exceptions, etc.
+    return {"value": str(value)}
+
+
 class AgentExecutionService:
-    """
-    Responsible for:
-    - AgentInvocation tracking
-    - agent_session_id generation
-    - agent execution lifecycle
-    """
 
     def __init__(self, db_session_factory, session_service):
         self.db = db_session_factory
         self.session_service = session_service
 
     # -------------------------------------------------
-    # Root Invocation (Cortex)
+    # Root Invocation
     # -------------------------------------------------
 
     async def start_root_invocation(
@@ -29,7 +40,7 @@ class AgentExecutionService:
         session_id,
         prompt,
     ):
-        invocation, agent_session_id = await self.start_invocation(
+        invocation, _ = await self.start_invocation(
             workflow_id=workflow_id,
             user_id=user_id,
             session_id=session_id,
@@ -52,10 +63,10 @@ class AgentExecutionService:
         prompt,
         args,
     ):
-        # ✅ user‑scoped agent session
         agent_session_id = f"{user_id}::{session_id}::{agent_name}"
 
         async with self.db() as db:
+
             result = await db.execute(
                 select(AgentInvocation)
                 .where(AgentInvocation.orchestration_session_id == workflow_id)
@@ -72,14 +83,14 @@ class AgentExecutionService:
                 step_order=next_step,
                 status="working",
                 started_at=datetime.now(timezone.utc),
-                input_payload=json.dumps(
-                    {
-                        "user_id": user_id,     # ✅ traceability
-                        "session_id": session_id,
-                        "tool_args": args,
-                        "user_prompt": prompt,
-                    }
-                )[:5000],
+
+                # ✅ JSON (NOT string anymore)
+                input_payload=_normalize_payload({
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "tool_args": args,
+                    "user_prompt": prompt,
+                }),
             )
 
             db.add(invocation)
@@ -89,14 +100,17 @@ class AgentExecutionService:
         return invocation, agent_session_id
 
     # -------------------------------------------------
-    # Completion / Failure
+    # Completion
     # -------------------------------------------------
 
-    async def complete_invocation(self, invocation_id, output,
-    input_tokens: int | None = None,
-    output_tokens: int | None = None,
-    total_tokens:  int | None = None
-):
+    async def complete_invocation(
+        self,
+        invocation_id,
+        output,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None
+    ):
         async with self.db() as db:
             result = await db.execute(
                 select(AgentInvocation).where(AgentInvocation.id == invocation_id)
@@ -106,18 +120,50 @@ class AgentExecutionService:
             if inv:
                 inv.status = "completed"
                 inv.completed_at = datetime.now(timezone.utc)
-                inv.output_payload = output[:5000]
-                inv.input_tokens=input_tokens
-                inv.output_tokens=output_tokens
-                inv.total_tokens=total_tokens
+
+                # ✅ JSON payload
+                payload = _normalize_payload(output)
+
+                # Avoid persisting empty text/dict as JSONB — store NULL instead
+                if isinstance(payload, dict):
+                    # empty dict -> no useful output
+                    if not payload:
+                        inv.output_payload = None
+                    # single empty text field -> treat as empty
+                    elif list(payload.keys()) == ["text"]:
+                        text = payload.get("text")
+                        if isinstance(text, str) and not text.strip():
+                            inv.output_payload = None
+                        else:
+                            inv.output_payload = payload
+                    else:
+                        inv.output_payload = payload
+                else:
+                    inv.output_payload = payload
+
+                if input_tokens is not None:
+                    inv.input_tokens = input_tokens
+
+                if output_tokens is not None:
+                    inv.output_tokens = output_tokens
+
+                if total_tokens is not None:
+                    inv.total_tokens = total_tokens
 
                 await db.commit()
 
-    async def fail_invocation(self, invocation_id, error_msg,
-    input_tokens: int | None = None,
-    output_tokens: int | None = None,
-    total_tokens:  int | None = None
-):
+    # -------------------------------------------------
+    # Failure
+    # -------------------------------------------------
+
+    async def fail_invocation(
+        self,
+        invocation_id,
+        error_msg,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None
+    ):
         async with self.db() as db:
             result = await db.execute(
                 select(AgentInvocation).where(AgentInvocation.id == invocation_id)
@@ -127,8 +173,48 @@ class AgentExecutionService:
             if inv:
                 inv.status = "failed"
                 inv.completed_at = datetime.now(timezone.utc)
-                inv.output_payload = error_msg[:5000]
-                inv.input_tokens=input_tokens
-                inv.output_tokens=output_tokens
-                inv.total_tokens=total_tokens
+
+                # ✅ Structured error
+                inv.output_payload = _normalize_payload({
+                    "status": "failed",
+                    "error": error_msg
+                })
+
+                if input_tokens is not None:
+                    inv.input_tokens = input_tokens
+
+                if output_tokens is not None:
+                    inv.output_tokens = output_tokens
+
+                if total_tokens is not None:
+                    inv.total_tokens = total_tokens
+
+                await db.commit()
+
+    # -------------------------------------------------
+    # Token Tracking
+    # -------------------------------------------------
+
+    async def add_token_usage(
+        self,
+        invocation_id: int,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+    ):
+        async with self.db() as db:
+            result = await db.execute(
+                select(AgentInvocation).where(AgentInvocation.id == invocation_id)
+            )
+            inv = result.scalar_one_or_none()
+
+            if inv:
+                input_tokens = input_tokens or 0
+                output_tokens = output_tokens or 0
+                total_tokens = total_tokens or 0
+
+                inv.input_tokens = (inv.input_tokens or 0) + input_tokens
+                inv.output_tokens = (inv.output_tokens or 0) + output_tokens
+                inv.total_tokens = (inv.total_tokens or 0) + total_tokens
+
                 await db.commit()

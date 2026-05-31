@@ -13,6 +13,10 @@ BASE_URL = "http://192.168.1.14:8000"
 WS_BASE = "ws://192.168.1.14:8000"
 ADMIN_TOKEN = os.getenv("SECRET_KEY", "super-secret")
 
+USER_ID = "aditya"
+TENANT_ID = "personal-resume-testing"
+ACCESS_TOKEN = "dev-token"
+
 # ------------------------------------------------------
 # API HELPERS
 # ------------------------------------------------------
@@ -162,7 +166,6 @@ async def chat_loop(ws, session_id: str):
 
 async def chat():
 
-    # ✅ ONE session_id for BOTH upload and websocket
     session_id = str(uuid.uuid4())
 
     ws_url = f"{WS_BASE}/ws/{session_id}"
@@ -174,12 +177,79 @@ async def chat():
         ping_timeout=60,
     ) as ws:
 
-        console.print("🤖 Connected to Orchestrator", style="bold green")
-        console.print(f"🧠 Session ID: {session_id}", style="dim")
-        console.print("Type /help for commands\n")
+        # --------------------------------------------------
+        # RECEIVE INITIAL CONNECTION MESSAGE
+        # --------------------------------------------------
+        try:
+            first_msg = json.loads(await ws.recv())
+
+            if first_msg.get("type"):
+                console.print(
+                    f"🔌 Server: {first_msg.get('type')}",
+                    style="dim"
+                )
+
+        except Exception as e:
+            console.print(
+                f"❌ Failed during connection: {e}",
+                style="red"
+            )
+            return
+
+        # --------------------------------------------------
+        # AUTH HANDSHAKE
+        # --------------------------------------------------
+        auth_payload = {
+            "type": "auth",
+            "access_token": ACCESS_TOKEN,
+            "user_id": USER_ID,
+            "tenant_id": TENANT_ID,
+            "roles": ["user"]
+        }
+        await ws.send(json.dumps(auth_payload))
+
+        try:
+            auth_response = json.loads(await ws.recv())
+
+            if auth_response.get("type") == "auth_failed":
+                console.print(
+                    f"❌ Authentication failed: "
+                    f"{auth_response.get('detail')}",
+                    style="red"
+                )
+                return
+
+            if auth_response.get("type") == "auth_ok":
+                console.print(
+                    "✅ Authentication successful",
+                    style="green"
+                )
+
+        except Exception as e:
+            console.print(
+                f"❌ Auth handshake failed: {e}",
+                style="red"
+            )
+            return
+
+        # --------------------------------------------------
+        # CHAT READY
+        # --------------------------------------------------
+        console.print(
+            "🤖 Connected to Orchestrator",
+            style="bold green"
+        )
+
+        console.print(
+            f"🧠 Session ID: {session_id}",
+            style="dim"
+        )
+
+        console.print(
+            "Type /help for commands\n"
+        )
 
         await chat_loop(ws, session_id)
-
 
 # ------------------------------------------------------
 # ENTRY

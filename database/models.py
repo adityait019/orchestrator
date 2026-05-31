@@ -1,14 +1,16 @@
 from datetime import datetime
+from sqlalchemy.dialects.postgresql import JSONB
+
 from sqlalchemy import (
-    ForeignKeyConstraint,
     String,
     Integer,
     Text,
     DateTime,
     Boolean,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
-    JSON,
+    CheckConstraint,
 )
 
 from sqlalchemy.sql import func
@@ -19,7 +21,14 @@ from sqlalchemy.orm import (
     relationship,
 )
 
+class SessionStatus:
+    ACTIVE = "active"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DELETED = "deleted"
 
+    
 # -------------------------------------------------------------------
 # Base
 # -------------------------------------------------------------------
@@ -32,25 +41,7 @@ class Base(DeclarativeBase):
 # 1️⃣ Agent Registry (Already in your system)
 # -------------------------------------------------------------------
 
-# class AgentRegistry(Base):
-#     __tablename__ = "agents"
 
-#     id: Mapped[int] = mapped_column(primary_key=True)
-#     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-#     host: Mapped[str] = mapped_column(String, nullable=False)
-#     port: Mapped[int] = mapped_column(Integer, nullable=False)
-#     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-#     is_healthy: Mapped[bool] = mapped_column(Boolean, default=False)
-
-#     #Agent Card 
-#     agent_card: Mapped[dict]=mapped_column(JSON,nullable=False)
-
-#     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-#     last_health_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-
-from sqlalchemy.dialects.postgresql import JSONB
 
 class AgentRegistry(Base):
     __tablename__ = "agents"
@@ -67,7 +58,12 @@ class AgentRegistry(Base):
     agent_card: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     # ✅ DB owns timestamp now
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
     last_health_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -75,28 +71,16 @@ class AgentRegistry(Base):
 # 2️⃣ Orchestration Session (Top-level workflow)
 # -------------------------------------------------------------------
 
-# class OrchestrationSession(Base):
-#     __tablename__ = "orchestration_sessions"
-
-#     id: Mapped[int] = mapped_column(primary_key=True)
-
-#     session_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-#     user_id: Mapped[str] = mapped_column(String(255), index=True)
-
-#     status: Mapped[str] = mapped_column(String(50), default="active")
-
-#     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now().astimezone())
-#     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-#     # Relationships
-#     invocations: Mapped[list["AgentInvocation"]] = relationship(
-#         back_populates="orchestration_session",
-#         cascade="all, delete-orphan"
-#     )
-
 
 class OrchestrationSession(Base):
     __tablename__ = "orchestration_sessions"
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','running','completed','failed','deleted')",
+            name="chk_orchestration_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
@@ -121,6 +105,10 @@ class OrchestrationSession(Base):
         cascade="all, delete-orphan",
     )
 
+    tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message_count: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # -------------------------------------------------------------------
@@ -132,9 +120,11 @@ class AgentInvocation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    orchestration_session_id: Mapped[int] = mapped_column(
-        ForeignKey("orchestration_sessions.id"),
-        index=True
+    orchestration_session_id: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("orchestration_sessions.session_id",ondelete="CASCADE"),
+        index=True,
+        nullable=False,
     )
 
     agent_name: Mapped[str] = mapped_column(String(150), index=True)
@@ -176,7 +166,7 @@ Index(
     AgentInvocation.orchestration_session_id,
     AgentInvocation.step_order,
 )
-
+Index("ix_agent_invocation_session", AgentInvocation.orchestration_session_id)
 
 # -------------------------------------------------------------------
 # 4️⃣ Agent Dependencies (A → B relationships)
@@ -188,13 +178,16 @@ class AgentDependency(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
 
     parent_invocation_id: Mapped[int] = mapped_column(
-        ForeignKey("agent_invocations.id"),
-        index=True
+        ForeignKey("agent_invocations.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
     )
 
     child_invocation_id: Mapped[int] = mapped_column(
-        ForeignKey("agent_invocations.id"),
-        index=True
+        ForeignKey("agent_invocations.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+
     )
 
     dependency_type: Mapped[str] = mapped_column(String(50))  # data, artifact, summary
@@ -212,8 +205,9 @@ class AgentEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
 
     invocation_id: Mapped[int] = mapped_column(
-        ForeignKey("agent_invocations.id"),
-        index=True
+        ForeignKey("agent_invocations.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
     )
 
     event_type: Mapped[str] = mapped_column(String(100))
@@ -227,29 +221,6 @@ class AgentEvent(Base):
     )
 
 
-# -------------------------------------------------------------------
-# 6️⃣ Artifacts (Generated files)
-# -------------------------------------------------------------------
-
-# class Artifact(Base):
-#     __tablename__ = "artifacts"
-
-#     id: Mapped[int] = mapped_column(primary_key=True)
-
-#     invocation_id: Mapped[int] = mapped_column(
-#         ForeignKey("agent_invocations.id"),
-#         index=True
-#     )
-
-#     file_id: Mapped[str] = mapped_column(String(255))
-#     filename: Mapped[str] = mapped_column(String(255))
-#     url: Mapped[str] = mapped_column(String(500))
-#     path: Mapped[str]= mapped_column(String(500))
-#     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-#     invocation: Mapped["AgentInvocation"] = relationship(
-#         back_populates="artifacts"
-#     )
 
 
 # -------------------------------------------------------------------
@@ -268,7 +239,7 @@ class Artifact(Base):
 
     # ✅ Agent context (optional for uploads)
     invocation_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agent_invocations.id"),
+        ForeignKey("agent_invocations.id", ondelete="CASCADE"),
         index=True,
         nullable=True,
     )
@@ -295,6 +266,8 @@ class Artifact(Base):
     invocation: Mapped["AgentInvocation"] = relationship(
         back_populates="artifacts"
     )
+
+
 
 # -------------------------------------------------------------------
 # 7️⃣ Google ADK Sessions - READ ONLY MAPPING
@@ -340,3 +313,38 @@ class ADKEvent(Base):
     invocation_id: Mapped[str] = mapped_column(String(256), nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     event_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+# -------------------------------------------------------------------
+# 9️⃣ Chat Messages (chat history persistence)
+# -------------------------------------------------------------------
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    session_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+
+    role: Mapped[str] = mapped_column(String(32), nullable=False)  # user | assistant | system
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(32), default="text", server_default="text", nullable=False)
+
+    agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    artifact_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+
+Index(
+    "ix_chat_messages_session_created",
+    ChatMessage.session_id,
+    ChatMessage.created_at
+)
