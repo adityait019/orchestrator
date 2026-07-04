@@ -14,8 +14,9 @@ downloads
 orchestrator_log.json
 orchestrator_log2.json
 root_agent.log
-.db
+*.db
 session.db
 .adk
 a2a-server-builder
 migrations
+root_agent.log.*

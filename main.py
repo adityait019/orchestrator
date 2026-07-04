@@ -1,32 +1,6 @@
 # main.py
 import logging
 from logging.handlers import RotatingFileHandler
-
-LOG_FILE = "root_agent.log"
-
-handler = RotatingFileHandler(
-    LOG_FILE,
-    maxBytes=10 * 1024 * 1024,  # 10 MB
-    backupCount=5,
-    encoding="utf-8"
-)
-
-formatter = logging.Formatter(
-    "CorteX:%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-)
-
-handler.setFormatter(formatter)
-
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)
-root_logger.addHandler(handler)
-
-
-# ---------- ✅ FIX 3: Silence noisy libraries ----------
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.error").setLevel(logging.INFO)
-
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -62,9 +36,44 @@ from session.session_manager import SessionManager
 from database.session import AsyncSessionLocal
 from agent_registry.health_monitor import health_check_loop
 from agents.agent import root_agent
+from state.state_manager import StateManager
+# from adk_database_memory import DatabaseMemoryService
+from memory_management.adk_base_memory.service import DatabaseMemoryService
 
-# logger = logging.getLogger(__name__)
+LOG_FILE = "root_agent.log"
 
+if os.name  == "nt":
+    # Avoid Windows file-lock conflicts when uvicorn reload spawns subprocesses.
+    handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=0,
+        encoding="utf-8",
+        delay=True,
+    )
+else:
+    handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,
+        encoding="utf-8"
+    )
+
+formatter = logging.Formatter(
+    "CorteX:%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+)
+
+handler.setFormatter(formatter)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+root_logger.addHandler(handler)
+
+
+# ---------- ✅ FIX 3: Silence noisy libraries ----------
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
 
 
@@ -84,7 +93,6 @@ async def lifespan(app: FastAPI):
 
     active_agents = await load_active_agents()
     root_agent.sub_agents = active_agents
-
     yield
 
     root_logger.info("🛑 FastAPI shutdown")
@@ -117,10 +125,10 @@ app.include_router(_swagger_router, include_in_schema=False)  # Swagger UI with 
 app.mount("/__ctrl__", _orch_panel_app)  # Internal dashboard (no auth for simplicity)
 # Core services
 session_manager = SessionManager(db_url=os.getenv("DATABASE_URL","not-present"),app_name=APP_NAME)
-
+state_manager = StateManager(session_manager=session_manager)
 app.state.session_manager=session_manager
-
-runner = create_runner(session_manager.session_service)
+memory_service=DatabaseMemoryService(db_url=os.getenv("DATABASE_URL","not-provided"))
+runner = create_runner(session_manager.session_service,memory_service)
 
 file_service = FileService(
     signing_secret=os.getenv("FILE_SIGNING_SECRET", "dev-only-secret"),
@@ -138,6 +146,7 @@ ws_handler = WebSocketHandler(
     agent_service,
     artifact_service,
     file_service,
+    state_manager,
 )
 
 

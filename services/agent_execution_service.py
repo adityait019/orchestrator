@@ -23,6 +23,34 @@ def _normalize_payload(value):
     return {"value": str(value)}
 
 
+def _build_input_payload(
+    user_id,
+    session_id,
+    prompt,
+    args,
+    plan_id=None,
+    task_node_id=None,
+    input_artifacts=None,
+):
+    payload = {
+        "user_id": user_id,
+        "session_id": session_id,
+        "tool_args": args,
+        "user_prompt": prompt,
+    }
+
+    if input_artifacts:
+        payload["input_artifacts"] = input_artifacts
+
+    if plan_id:
+        payload["plan_id"] = plan_id
+
+    if task_node_id:
+        payload["task_node_id"] = task_node_id
+
+    return _normalize_payload(payload)
+
+
 class AgentExecutionService:
 
     def __init__(self, db_session_factory, session_service):
@@ -62,6 +90,12 @@ class AgentExecutionService:
         agent_name,
         prompt,
         args,
+        # ✅ NEW (optional)
+        plan_id: str | None = None,
+        task_node_id: str | None = None,
+        parent_invocation_id: int | None = None,
+        input_artifacts: list | None = None,
+
     ):
         agent_session_id = f"{user_id}::{session_id}::{agent_name}"
 
@@ -76,21 +110,26 @@ class AgentExecutionService:
 
             next_step = 1 if not last else last.step_order + 1
 
+
+            payload = _build_input_payload(user_id=user_id,
+                                           session_id=session_id,
+                                           prompt=prompt,
+                                           args=args,
+                                           plan_id=plan_id,
+                                           task_node_id=task_node_id,
+                                           input_artifacts=input_artifacts)
+
             invocation = AgentInvocation(
                 orchestration_session_id=workflow_id,
                 agent_name=agent_name,
                 agent_session_id=agent_session_id,
                 step_order=next_step,
-                status="working",
+                status="waiting",
                 started_at=datetime.now(timezone.utc),
+                input_payload=payload,
 
-                # ✅ JSON (NOT string anymore)
-                input_payload=_normalize_payload({
-                    "user_id": user_id,
-                    "session_id": session_id,
-                    "tool_args": args,
-                    "user_prompt": prompt,
-                }),
+                plan_id=plan_id,
+                task_node_id=task_node_id,
             )
 
             db.add(invocation)

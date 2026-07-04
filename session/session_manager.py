@@ -6,18 +6,6 @@ from google.adk.sessions.base_session_service import GetSessionConfig
 from typing import Dict, Optional
 import uuid
 import mimetypes
-from a2a.types import Message
-
-
-
-# In SessionManager
-
-import json
-from google.genai.types import Part
-
-META_TOOL_TOKEN_PREFIX = "[META:TOOL_TOKENS]"
-
-
 
 
 class SessionManager:
@@ -50,7 +38,7 @@ class SessionManager:
             app_name=self.app_name,
             user_id=user_id,
             session_id=session_id,
-            config=GetSessionConfig(num_recent_events=1),
+            config=GetSessionConfig(num_recent_events=50),
         )
 
     async def create_session(
@@ -142,39 +130,6 @@ class SessionManager:
         return parts
 
 
-
-    async def attach_tool_tokens(
-        self,
-        parts: list[Part],
-        payload: dict,  # {access_token, refresh_token}
-        session_id:str,
-    ):
-        """
-        TEMPORARY / TESTING ONLY.
-
-        Attaches tool tokens as a META text Part so they reach the remote agent.
-        The agent is responsible for:
-        - extracting
-        - forwarding to the tool
-        - NOT emitting them back as normal text
-        """
-
-        if not payload:
-            return parts
-
-        meta_blob = {
-            "type": "tool_credentials",
-            "access_token": payload.get("access_token"),
-            "refresh_token": payload.get("refresh_token"),
-        }
-
-        parts.append(
-            Part(
-                text=f"{META_TOOL_TOKEN_PREFIX} {json.dumps(meta_blob)}"
-            )
-        )
-
-        return parts
     # -----------------------------
     # WebSocket lifecycle
     # -----------------------------
@@ -188,3 +143,51 @@ class SessionManager:
         key = self._key(user_id, session_id)
         if key in self.active_sessions:
             self.active_sessions[key]["connected"] = False
+
+
+    # ✅ add this
+    async def set_active_agent(self, user_id: str, session_id: str, agent_name: str):
+        session = await self.ensure_session(user_id, session_id)
+
+        evt = Event(
+            invocation_id=str(uuid.uuid4()),
+            author="system",
+            actions=EventActions(
+                state_delta={"routing": {"active_agent": agent_name}}
+            ),
+            partial=False,
+        )
+
+        await self.session_service.append_event(session, evt)
+
+
+    async def get_active_agent(self, user_id: str, session_id: str):
+        session = await self.get_session(user_id, session_id)
+        if not session or not session.state:
+            return None
+
+        return session.state.get("routing", {}).get("active_agent")
+
+
+    async def clear_active_agent(self, user_id: str, session_id: str):
+        session = await self.ensure_session(user_id, session_id)
+
+        evt = Event(
+            invocation_id=str(uuid.uuid4()),
+            author="system",
+            actions=EventActions(
+                state_delta={"routing": {"active_agent": None}}
+            ),
+            partial=False,
+        )
+
+        await self.session_service.append_event(session, evt)
+
+
+    def _build_state_event(self, delta: dict):
+        return Event(
+            invocation_id=str(uuid.uuid4()),
+            author="system",
+            actions=EventActions(state_delta=delta),
+            partial=False,
+        )

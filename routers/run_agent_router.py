@@ -6,6 +6,7 @@ import os
 from pydantic import BaseModel
 from core.runner_factory import create_runner
 from google.genai.types import Content, Part
+from memory_management.adk_base_memory.service import DatabaseMemoryService
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/run", tags=["Run Agent"])
 
@@ -22,7 +23,8 @@ class AgentResponse(BaseModel):
     response: str
 
 session_manager = SessionManager(db_url=os.getenv("DATABASE_URL","not-present"),app_name=APP_NAME)
-runner = create_runner(session_manager.session_service)
+memory_manager=DatabaseMemoryService(db_url=os.getenv("DATABASE_URL","not-present"))
+runner = create_runner(session_manager.session_service,memory_service=memory_manager)
 
 @router.post("/", response_model=AgentResponse)
 async def run_agent(request: AgentRequest):

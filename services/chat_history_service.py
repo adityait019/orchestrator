@@ -48,7 +48,7 @@ class ChatHistoryService:
 
         try:
             # ✅ 1. Ensure ADK session (same pattern as upload router)
-            await session_manager.ensure_session(user_id, session_id)
+            # await session_manager.ensure_session(user_id, session_id)
 
             async with AsyncSessionLocal() as db:
                 async with db.begin():

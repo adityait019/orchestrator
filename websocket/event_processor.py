@@ -1,35 +1,41 @@
-# websocket/event_processor.py
-
+from __future__ import annotations
 from tools.helper_downloads import fetch_remote_file
-from websocket.event_normaliser import normalize_event
-import uuid
+from websocket.event_normalizer import normalize_event
+from state.models import RemoteAgentState
+import asyncio
 import logging
+import hashlib
 
 logger = logging.getLogger(__name__)
 
-class EventProcessor:
-    """
-    Interprets model events and updates runtime state.
-    """
 
-    def __init__(self, emitter, agent_service, artifact_service, file_service):
+class EventProcessor:
+
+    def __init__(self, emitter, agent_service, artifact_service, file_service, session_manager, state_manager):
         self.emitter = emitter
         self.agent_service = agent_service
         self.artifact_service = artifact_service
         self.file_service = file_service
+        self.session_manager = session_manager
+        self.state_manager = state_manager
 
-    def _merge_output_payload(self, ic, payload: dict | None):
+    # =========================
+    # MERGE OUTPUT
+    # =========================
+    def _merge_output_payload(self, runtime, payload: dict | None):
         if not payload:
             return
-        if ic.output_payload is None:
-            ic.output_payload = payload
+
+        if runtime.output_payload is None:
+            runtime.output_payload = payload
             return
 
-        if not isinstance(ic.output_payload, dict):
-            ic.output_payload = payload
+        if not isinstance(runtime.output_payload, dict):
+            runtime.output_payload = payload
             return
 
-        merged = dict(ic.output_payload)
+        merged = dict(runtime.output_payload)
+
         for key, value in payload.items():
             if key == "text" and isinstance(value, str):
                 existing = merged.get("text")
@@ -37,318 +43,385 @@ class EventProcessor:
                     merged["text"] = existing + value
                     continue
             merged[key] = value
-        ic.output_payload = merged
 
-    async def _finalize_invocation(self, ctx, *, failed=False, error_msg=None):
-        ic = ctx["invocation_ctx"]
-        if not ic.invocation_id:
+        runtime.output_payload = merged
+
+    def _hash(self, text: str):
+        return hashlib.md5(text.encode()).hexdigest()
+
+    # =========================
+    # FINALIZE ✅ FIXED
+    # =========================
+    async def _finalize_invocation(self, ctx, runtime, *, failed=False, error_msg=None):
+        if not runtime or runtime.completed:
+            return
+
+        inv_ctx = ctx["invocation_ctx"]
+        orch_state = inv_ctx.orch_state
+        task = orch_state.task if orch_state else None
+
+        # ✅ CRITICAL FIX — BLOCK finalize if waiting for input
+        if task and task.get("interaction") == "request_input" and not failed:
+            logger.info("⛔ Preventing premature completion (waiting for input)")
             return
 
         if failed:
             await self.agent_service.fail_invocation(
-                ic.invocation_id,
+                runtime.invocation_id,
                 error_msg or "Invocation failed",
-                ic.input_tokens,
-                ic.output_tokens,
-                ic.total_tokens,
+                runtime.input_tokens,
+                runtime.output_tokens,
+                runtime.total_tokens,
             )
         else:
-            output = ic.output_payload if ic.output_payload is not None else (ic.buffer or None)
+            output = runtime.output_payload if runtime.output_payload is not None else (runtime.buffer or None)
+
             await self.agent_service.complete_invocation(
-                ic.invocation_id,
+                runtime.invocation_id,
                 output,
-                ic.input_tokens,
-                ic.output_tokens,
-                ic.total_tokens,
+                runtime.input_tokens,
+                runtime.output_tokens,
+                runtime.total_tokens,
             )
 
-        # Reset state
-        ic.invocation_id = None
-        ic.buffer = ""
-        ic.output_payload = None
-        ic.input_tokens = ic.output_tokens = ic.total_tokens = 0
+        if orch_state:
+            orch_state.active_agent = runtime.agent_name
+            orch_state.last_output = runtime.output_payload or runtime.buffer
+            inv_ctx.pending_state_update = True
 
+        runtime.completed = True
+
+        logger.info(
+            "[FINALIZE] agent=%s invocation=%s status=%s tokens=%d",
+            runtime.agent_name,
+            runtime.invocation_id,
+            "FAILED" if failed else "COMPLETED",
+            runtime.total_tokens
+        )
+
+    # =========================
+    # MAIN PROCESS
+    # =========================
     async def process(self, event, ctx):
-        ic = ctx["invocation_ctx"]
 
+        inv_ctx = ctx["invocation_ctx"]
+        runtime = inv_ctx.runtimes.get(inv_ctx.active_invocation_id)
 
+        logger.info(
+            "[EVENT START] event_type=%s active_invocation=%s agent=%s",
+            type(event).__name__,
+            inv_ctx.active_invocation_id,
+            runtime.agent_name if runtime else None
+        )
+
+        if not runtime:
+            logger.error(
+                "[RUNTIME MISSING] active_invocation=%s available_runtimes=%s",
+                inv_ctx.active_invocation_id,
+                list(inv_ctx.runtimes.keys())
+            )
+            return
 
         normalized = normalize_event(event)
 
-        logger.debug(
-            "[POST-NORMALIZE] text=%s metadata=%s raw_event=%s",
-            normalized.text,
-            normalized.metadata,
-            type(event)
-        )
-
-        # Handle explicit model errors first
-        if getattr(event, "error_message", None):
-            err_msg = event.error_message
-            ic.buffer += f"\nERROR: {err_msg}"
-            await self._finalize_invocation(ctx, failed=True, error_msg=err_msg)
-            await self.emitter.bot_message(f"❌ {err_msg}")
-            return
-
-        # Merge raw metadata + normalized metadata
+        # =========================
+        # ✅ SAFE METADATA MERGE (FIX)
+        # =========================
         meta = {}
         raw_meta = getattr(event, "custom_metadata", {}) or {}
+
         if isinstance(raw_meta, dict):
             meta.update(raw_meta)
+
         if isinstance(normalized.metadata, dict):
-            meta.update(normalized.metadata)
+            for k, v in normalized.metadata.items():
 
+                # ✅ CRITICAL FIX — DO NOT overwrite interaction blindly
+                if k == "interaction":
+                    if normalized.text:  # ✅ ONLY agent messages
+                        meta[k] = v
+                    continue
 
-        # ==== A2A TOKEN USAGE (REMOTE AGENTS) ====
+                meta[k] = v
 
+        # =========================
+        # ✅ DEBUG META
+        # =========================
+        if normalized.raw_meta:
+            await self.emitter.debug_meta(normalized.raw_meta)
 
-        token_usage = meta.get("token_usage") or meta.get("tool_usage")
+        # =========================
+        # ✅ REMOTE STATE
+        # =========================
+        if self.state_manager:
+            context_id = normalized.a2a_context_id or meta.get("a2a:context_id")
+            task_id = normalized.a2a_task_id or meta.get("a2a:task_id")
+
+            if context_id or task_id:
+                try:
+                    await self.state_manager.save_remote_state(
+                        user_id=ctx["user_id"],
+                        session_id=ctx["session_id"],
+                        state=RemoteAgentState(
+                            agent_name=runtime.agent_name,
+                            scope_key=ctx["session_id"],
+                            remote_context_id=context_id,
+                            remote_task_id=task_id,
+                        )
+                    )
+                except Exception:
+                    logger.exception("[REMOTE STATE SAVE FAILED]")
+
+        # =========================
+        # ✅ A2A PROGRESS (FIXED)
+        # =========================
+        if normalized.a2a_state:
+
+            interaction = None
+
+            # ✅ ONLY trust interaction from agent text response
+            if normalized.text:
+                interaction = meta.get("interaction")
+
+            ctx["invocation_ctx"].orch_state.task = {
+                "owner": runtime.agent_name,
+                "state": normalized.a2a_state,
+                "task_id": normalized.a2a_task_id,
+                "interaction": interaction
+            }
+
+            await self.emitter.agent_progress(
+                agent=runtime.agent_name,
+                state=normalized.a2a_state,
+                task_id=normalized.a2a_task_id,
+            )
+
+        # =========================
+        # ✅ ERROR
+        # =========================
+        if getattr(event, "error_message", None):
+            err_msg = event.error_message
+            runtime.buffer += f"\nERROR: {err_msg}"
+
+            await self._finalize_invocation(ctx, runtime, failed=True, error_msg=err_msg)
+            await self.emitter.bot_message(f"❌ {err_msg}", agent=runtime.agent_name)
+            return
+
+        # =========================
+        # ✅ TOKEN USAGE
+        # =========================
+        token_usage = (
+            normalized.token_usage
+            or meta.get("token_usage")
+            or meta.get("tool_usage")
+        )
 
         if isinstance(token_usage, dict):
-
             input_tokens = int(token_usage.get("input_tokens", 0))
             output_tokens = int(token_usage.get("output_tokens", 0))
             total_tokens = int(token_usage.get("total_tokens", 0))
 
-            logger.info(
-                "[TOKEN RECEIVED] agent=%s invocation_id=%s input=%s output=%s total=%s",
-                ic.agent_name,
-                ic.invocation_id,
+            await self.agent_service.add_token_usage(
+                runtime.invocation_id,
                 input_tokens,
                 output_tokens,
                 total_tokens,
             )
 
-            # ✅ ✅ SAVE DIRECTLY to correct DB row
-            if ic.invocation_id:
-                await self.agent_service.add_token_usage(
-                    invocation_id=ic.invocation_id,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    total_tokens=total_tokens,
-                )
+            runtime.input_tokens += input_tokens
+            runtime.output_tokens += output_tokens
+            runtime.total_tokens += total_tokens
 
-            # ✅ aggregation (for UI)
-            ic.input_tokens += input_tokens
-            ic.output_tokens += output_tokens
-            ic.total_tokens += total_tokens
-
-            await self.emitter.status(
-                "token_usage",
-                input=ic.input_tokens,
-                output=ic.output_tokens,
-                total=ic.total_tokens,
+            await self.emitter.token_usage(
+                agent=runtime.agent_name,
+                input_tokens=runtime.input_tokens,
+                output_tokens=runtime.output_tokens,
+                total_tokens=runtime.total_tokens,
             )
 
-        # ==== A2A Progress Events Handling ====
-        # 1) Process any recovered progress events list
-        recovered_list = meta.get("recovered_progress_events")
-        if isinstance(recovered_list, list):
-            for progress in recovered_list:
-                event_type = progress.get("event")
-                tool_name = progress.get("tool_name", "remote_tool")
-                if event_type == "tool_call":
-                    logger.info("[REMOTE TOOL CALL]: %s", tool_name)
-                    ic.remote_tool_name = tool_name
-                    await self.emitter.status("tool_started", name=tool_name)
-                    await self.emitter.tool_call(name=tool_name, args={})
-                elif event_type == "tool_response":
-                    response = progress.get("tool_response", "")
-                    logger.info("[REMOTE TOOL RESPONSE] %s", tool_name)
-                    await self.emitter.status("tool_completed")
-                    await self.emitter.tool_result(
-                        name=getattr(ic, "remote_tool_name", tool_name),
-                        response={"message": response}
-                    )
-                else:
-                    # Generic progress updates (state/message/etc.)
-                    payload = {}
-                    for fld in ("state", "message", "phase", "step", "progress", "waiting_on"):
-                        if fld in progress:
-                            payload[fld] = progress[fld]
-                    if progress.get("heartbeat"):
-                        payload["heartbeat"] = True
-                    if payload:
-                        logger.info("[PROGRESS UPDATE]: %s", payload)
-                        await self.emitter.task_update(**payload)
-                    if progress.get("state") == "failed":
-                        await self._finalize_invocation(ctx, failed=True, error_msg=progress.get("message") or "Remote agent failed")
-                        await self.emitter.bot_message("❌ The remote agent reported a failure.")
-            # Once handled, we skip further progress handling from normalized meta
+        # =========================
+        # ✅ TOOL EVENTS
+        # =========================
+        if meta.get("type") == "tool_event":
+            phase = meta.get("phase")
+            tool_name = meta.get("tool_name")
+            data = meta.get("data")
 
-        # 2) Handle any single progress in meta["a2a:progress"] (backwards compatibility)
-        progress = meta.get("a2a:progress")
-        if isinstance(progress, dict):
-            # (Same logic as above for completeness, but typically recovered_list covers it)
-            event_type = progress.get("event")
-            if event_type == "tool_call":
-                tool_name = progress.get("tool_name", "remote_tool")
-                logger.info("[REMOTE TOOL CALL]: %s", tool_name)
-                ic.remote_tool_name = tool_name
-                await self.emitter.status("tool_started", name=tool_name)
-                await self.emitter.tool_call(name=tool_name, args={})
-                return
-            elif event_type == "tool_response":
-                response = progress.get("tool_response", "")
-                logger.info("[REMOTE TOOL RESPONSE]")
-                await self.emitter.status("tool_completed")
+            if phase == "call":
+                await self.emitter.tool_call(name=tool_name, args={}, agent=runtime.agent_name)
+
+            elif phase == "response":
+                if getattr(runtime, "last_tool_response", None) == data:
+                    return
+
+                runtime.last_tool_response = data
+
                 await self.emitter.tool_result(
-                    name=getattr(ic, "remote_tool_name", "remote_tool"),
-                    response={"message": response}
+                    name=tool_name,
+                    response=data or {},
+                    agent=runtime.agent_name,
                 )
-                return
-            # Generic state updates
-            payload = {}
-            for fld in ("state", "message", "phase", "step", "progress", "waiting_on"):
-                if fld in progress:
-                    payload[fld] = progress[fld]
-            if progress.get("heartbeat"):
-                payload["heartbeat"] = True
-            if payload:
-                logger.info("[PROGRESS UPDATE]: %s", payload)
-                await self.emitter.task_update(**payload)
-            if progress.get("state") == "failed":
-                await self._finalize_invocation(ctx, failed=True, error_msg=progress.get("message") or "Remote agent failed")
-                await self.emitter.bot_message("❌ The remote agent reported a failure.")
-                return
 
-        # Token usage updates (unchanged)
-        usage = getattr(event, "usage_metadata", None)
-        if usage:
-            ic.input_tokens += (usage.prompt_token_count or 0)
-            ic.output_tokens += (usage.candidates_token_count or 0)
-            ic.total_tokens += (usage.total_token_count or 0)
-            await self.emitter.status(
-                "token_usage",
-                input=ic.input_tokens,
-                output=ic.output_tokens,
-                total=ic.total_tokens,
-            )
+        # =========================
+        # ✅ TEXT STREAMING
+        # =========================
+        if normalized.text:
+            clean = normalized.text.strip()
+            h = self._hash(clean)
 
-        # Text streaming: emit assistant text *only if* it is not a progress marker
-        skip = False
-        sem_progress = meta.get("a2a:progress")
-        if isinstance(sem_progress, dict):
-            evt = sem_progress.get("event")
-            if evt in {"tool_call", "tool_response"}:
-                skip = True
-        if normalized.text and not skip:
-            clean_text = normalized.text.strip()
-            if clean_text:
-                logger.info("[NORMALIZED TEXT]: %s", clean_text)
-                ic.buffer += clean_text
-                self._merge_output_payload(ic, {"text": clean_text})
-                await self.emitter.bot_message(clean_text)
+            if clean and h != getattr(runtime, "last_hash", None):
+                runtime.last_hash = h
+                runtime.buffer += clean
+                self._merge_output_payload(runtime, {"text": clean})
 
-        # A2A task status updates (unchanged)
-        a2a_resp = meta.get("a2a:response")
-        if isinstance(a2a_resp, dict):
-            status = a2a_resp.get("status", {})
-            state = (status.get("state") or "").lower()
-            message = status.get("message") or status.get("detail") or ""
-            error_text = meta.get("a2a:error_text")
-            error_struct = meta.get("a2a:error")
+                await self.emitter.bot_message(clean, agent=runtime.agent_name)
 
-            if error_text:
-                message = error_text
-            
-            await self.emitter.status(
-                "task_update",
-                state=state,
-                message=message or f"🔄 Task {state.replace('_', ' ')}",
-            )
-            if state == "failed":
-                await self._finalize_invocation(ctx, failed=True, error_msg=error_struct or "Remote agent reported failure")
-                await self.emitter.bot_message(f"{error_struct or '❌ The remote agent reported a failure.'}")
-                await self.emitter.error_details(error_struct or status)
-                return
-
-        # File handling (unchanged)
-        if normalized.files and ic.invocation_id:
+        # =========================
+        # ✅ FILES
+        # =========================
+        if normalized.files:
             urls = []
+
             for file_url in normalized.files:
                 try:
-                    # tenant_id=str(uuid.uuid4())
                     file_id, filename, path = await fetch_remote_file(str(file_url))
+
+                    tenant_id = ctx.get("tenant_id") or runtime.invocation_id
+
                     signed_url = self.file_service.make_signed_url(
-                        tenant_id=ctx.get("tenant_id", str(uuid.uuid4())),
+                        tenant_id=tenant_id,
                         user_id=ctx["user_id"],
                         session_id=ctx["session_id"],
                         file_id=file_id,
                         filename=filename,
                     )
+
                     await self.artifact_service.store_artifact(
-                        tenant_id=ctx.get("tenant_id", str(uuid.uuid4())),
+                        tenant_id=tenant_id,
                         user_id=ctx["user_id"],
                         session_id=ctx["session_id"],
-                        invocation_id=ic.invocation_id,
+                        invocation_id=runtime.invocation_id,
                         file_id=file_id,
                         filename=filename,
                         signed_url=signed_url,
                         path=path,
                     )
+
                     urls.append(signed_url)
-                except Exception as ex:
-                    logger.exception("Failed processing normalized file: %s", ex)
+
+                except Exception:
+                    logger.exception("File processing failed")
+
             if urls:
-                self._merge_output_payload(ic, {"files": urls})
-                await self.emitter.status("tool_completed", message="✅ Files processed successfully.")
+                self._merge_output_payload(runtime, {"files": urls})
                 await self.emitter.file_processed(urls)
 
-        # Structured ADK function_call/response (unchanged)
+        # =========================
+        # ✅ FUNCTION CALL / AGENT SWITCH
+        # =========================
         content = getattr(event, "content", None)
         parts = getattr(content, "parts", None) if content else None
+
+        # ✅ FIX: resolve tool_call_id from A2A metadata for patching
+        a2a_tool_call_id = (
+            raw_meta.get("tool_call_id")
+            or normalized.metadata.get("tool_call_id")
+        )
+
         if parts:
             for p in parts:
+
                 if getattr(p, "function_call", None):
                     fc = p.function_call
 
-                    fn_name = getattr(fc, "name", None)
-                    fn_args = getattr(fc, "args", None) or {}
-
-                    try:
-                        fn_args = dict(fn_args)
-                    except Exception:
-                        fn_args = {}
-
-                    # For ADK agent handoff, fc.name is "transfer_to_agent"
-                    # but the actual target agent is inside fc.args["agent_name"]
-                    if fn_name == "transfer_to_agent":
-                        invocation_agent_name = fn_args.get("agent_name")
-                    else:
-                        invocation_agent_name = fn_name
-
-                    if not invocation_agent_name:
-                        logging.warning(
-                            "[TOOL CALL] Could not resolve agent name. fn_name=%s args=%s",
-                            fn_name,
-                            fn_args,
+                    # ✅ FIX: patch missing function_call.id from A2A metadata
+                    if not fc.id and a2a_tool_call_id:
+                        fc.id = a2a_tool_call_id
+                        logger.info(
+                            "[PATCHED fc.id] tool=%s id=%s",
+                            fc.name, fc.id
                         )
+                    elif not fc.id:
+                        import uuid
+                        fc.id = f"adk_{fc.name}_{uuid.uuid4().hex[:8]}"
+                        logger.warning(
+                            "[PATCHED fc.id FALLBACK] tool=%s generated id=%s",
+                            fc.name, fc.id
+                        )
+
+                    fn_name = fc.name
+                    fn_args = dict(fc.args or {})
+
+                    agent_name = fn_args.get("agent_name") if fn_name == "transfer_to_agent" else fn_name
+                    if not agent_name:
                         continue
 
-                    await self._finalize_invocation(ctx)
-                    invocation, agent_session_id = await self.agent_service.start_invocation(
+                    await self._finalize_invocation(ctx, runtime)
+
+                    invocation, _ = await self.agent_service.start_invocation(
                         workflow_id=ctx["workflow_id"],
                         session_id=ctx["session_id"],
-                        user_id=ctx.get("user_id"),
-                        agent_name=invocation_agent_name,
+                        user_id=ctx["user_id"],
+                        agent_name=agent_name,
                         prompt=ctx["prompt"],
-                        args=fc.args,
+                        args=fn_args,
                     )
-                    ic.invocation_id = invocation.id
-                    ic.agent_name = invocation_agent_name
-                    ic.agent_session_id = agent_session_id
-                    ic.buffer = ""
-                    ic.input_tokens = ic.output_tokens = ic.total_tokens = 0
-                    await self.emitter.status("tool_started", name=invocation_agent_name)
-                    await self.emitter.tool_call(name=fc.name, args=fc.args)
-                    continue
-                if getattr(p, "function_response", None):
-                    fr = p.function_response
-                    if fr.response is not None:
-                        self._merge_output_payload(ic, {"function_response": {"name": fr.name, "response": fr.response}})
-                    await self.emitter.status("tool_completed", name=fr.name)
-                    await self.emitter.tool_result(name=fr.name, response=fr.response or {})
+
+                    new_runtime = type(runtime)(
+                        invocation_id=invocation.id,
+                        agent_name=agent_name,
+                    )
+
+                    inv_ctx.runtimes[invocation.id] = new_runtime
+                    inv_ctx.active_invocation_id = invocation.id
+
+                    await self.emitter.status("tool_started", agent=agent_name)
+                    await self.emitter.tool_call(name=fn_name, args=fn_args, agent=agent_name)
+
                     continue
 
-        logger.debug("[EVENT PROCESSING COMPLETE]")
+                if getattr(p, "function_response", None):
+                    fr = p.function_response
+
+                    # ✅ FIX: patch missing function_response.id from A2A metadata
+                    if not fr.id and a2a_tool_call_id:
+                        fr.id = a2a_tool_call_id
+                        logger.info(
+                            "[PATCHED fr.id] tool=%s id=%s",
+                            fr.name, fr.id
+                        )
+                    elif not fr.id:
+                        import uuid
+                        fr.id = f"adk_{fr.name}_{uuid.uuid4().hex[:8]}"
+                        logger.warning(
+                            "[PATCHED fr.id FALLBACK] tool=%s generated id=%s",
+                            fr.name, fr.id
+                        )
+
+                    self._merge_output_payload(
+                        runtime,
+                        {"function_response": {
+                            "name": fr.name,
+                            "response": fr.response,
+                        }},
+                    )
+
+                    await self.emitter.tool_result(
+                        name=fr.name,
+                        response=fr.response or {},
+                        agent=runtime.agent_name,
+                    )
+        # =========================
+        # ✅ FINALIZE (FIXED)
+        # =========================
+        is_terminal = not getattr(event, "partial", False)
+
+        task = ctx["invocation_ctx"].orch_state.task
+
+        if task and task.get("interaction") == "request_input":
+            logger.info("⏸ Skipping finalize — waiting for user input")
+        else:
+            if is_terminal and not runtime.completed:
+                await self._finalize_invocation(ctx, runtime)
+
+        await asyncio.sleep(0)

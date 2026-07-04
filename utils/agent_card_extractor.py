@@ -1,84 +1,163 @@
-# utils/agent_card_extractors.py
-
 from typing import Any, Dict, List, Tuple
+from agents.agent import root_agent,BASE_INSTRUCTION
+import logging
 
-def extract_description_capabilities_skills(card: Dict[str, Any]) -> Tuple[str, List[str], List[str], List[Dict[str, Any]]]:
-    """
-    Extracts:
-      - description: str
-      - capabilities: list[str]  (normalized)
-      - skills: list[str]        (skill names)
-      - skills_full: list[dict]  (original skill objects when available)
+logger=logging.getLogger(__name__)
 
-    Supports:
-      - description at top-level or under metadata.description
-      - capabilities as:
-          • dict/object (use keys as capability names)
-          • list[str]   (use as-is)
-          • list[dict]  (extract name or id)
-      - skills as:
-          • list[dict] with name/id
-          • list[str]
-    """
+def extract_description_capabilities_skills(
+    card: Dict[str, Any]
+) -> Tuple[str, List[str], List[str], List[Dict[str, Any]]]:
+
     md = card.get("metadata") or {}
 
-    # --- description ---
+    # -------------------------
+    # DESCRIPTION
+    # -------------------------
     description = (
         card.get("description")
         or md.get("description")
         or ""
     )
 
-    # --- capabilities ---
+    # -------------------------
+    # CAPABILITIES (ENRICHED)
+    # -------------------------
     capabilities_raw = card.get("capabilities") or md.get("capabilities")
     caps: List[str] = []
 
+    # ✅ Base capability keys (streaming, extensions etc.)
     if isinstance(capabilities_raw, dict):
-        # common in many cards: use keys as capability names
-        caps = [str(k) for k in capabilities_raw.keys()]
+        caps.extend([str(k) for k in capabilities_raw.keys()])
+
+        # ✅ Extract deep extension intelligence
+        extensions = capabilities_raw.get("extensions", [])
+        if isinstance(extensions, list) and extensions:
+            params = extensions[0].get("params", {})
+
+            # --- specialization ---
+            spec = params.get("specialization", {})
+            primary = spec.get("primary")
+            if primary:
+                caps.append(f"domain:{primary}")
+
+            for d in spec.get("domain_specific", []):
+                caps.append(f"domain:{d}")
+
+            # --- platforms ---
+            cap_block = params.get("capabilities", {})
+            for p in cap_block.get("platforms", []):
+                caps.append(f"platform:{p}")
+
+            # --- frameworks ---
+            for f in cap_block.get("frameworks", []):
+                caps.append(f"framework:{f}")
+
+            # --- languages ---
+            for l in cap_block.get("languages", []):
+                caps.append(f"language:{l}")
+
+            # --- HITL flag ---
+            if params.get("human_in_loop"):
+                caps.append("requires_human_approval")
+
     elif isinstance(capabilities_raw, list):
-        # could be list[str] or list[dict]
         for item in capabilities_raw:
             if isinstance(item, str):
                 caps.append(item)
             elif isinstance(item, dict):
-                name = item.get("name") or item.get("id") or item.get("title")
+                name = item.get("name") or item.get("id")
                 if name:
                     caps.append(str(name))
-    elif isinstance(capabilities_raw, str) and capabilities_raw.strip():
-        # rare: comma-separated
-        caps = [s.strip() for s in capabilities_raw.split(",") if s.strip()]
-    else:
-        caps = []
 
-    # --- skills ---
+    # -------------------------
+    # SKILLS (ENRICHED WITH DESCRIPTION)
+    # -------------------------
     skills_raw = card.get("skills") or md.get("skills") or []
     skills: List[str] = []
     skills_full: List[Dict[str, Any]] = []
 
     if isinstance(skills_raw, list):
         for s in skills_raw:
-            if isinstance(s, str):
+            if isinstance(s, dict):
+                name = s.get("name") or s.get("id")
+                desc = s.get("description", "")
+
+                # ✅ combine name + description for LLM reasoning
+                if name and desc:
+                    skills.append(f"{name}: {desc}")
+                elif name:
+                    skills.append(name)
+
+                skills_full.append(s)
+
+            elif isinstance(s, str):
                 skills.append(s)
                 skills_full.append({"name": s})
-            elif isinstance(s, dict):
-                name = s.get("name") or s.get("id") or s.get("title")
-                if name:
-                    skills.append(str(name))
-                # Keep full object for downstream UIs:
-                skills_full.append(s)
-    elif isinstance(skills_raw, dict):
-        # If provided as dict of skillName -> details
-        for k, v in skills_raw.items():
-            skills.append(str(k))
-            if isinstance(v, dict):
-                skills_full.append({"name": k, **v})
-            else:
-                skills_full.append({"name": k, "value": v})
-    elif isinstance(skills_raw, str) and skills_raw.strip():
-        # comma-separated fallback
-        for s in [x.strip() for x in skills_raw.split(",") if x.strip()]:
-            skills.append(s)
-            skills_full.append({"name": s})
+
+    # -------------------------
+    # DEDUP
+    # -------------------------
+    caps = list(dict.fromkeys(caps))
+    skills = list(dict.fromkeys(skills))
 
     return description, caps, skills, skills_full
+
+
+
+def build_reasoning_profile(name, description, caps, skills):
+    return f"""
+Agent: {name}
+
+Description:
+{description}
+
+Capabilities:
+{chr(10).join(f"- {c}" for c in caps)}
+
+Skills:
+{chr(10).join(f"- {s}" for s in skills)}
+""".strip()
+
+
+
+async def build_agent_prompt(agents):
+
+    logger.info('Building Agent prompt..')
+    blocks = []
+
+    for a in agents:
+        caps = getattr(a, "capabilities", [])
+        skills = getattr(a, "skills", [])
+
+        block = f"""
+Agent name: {a.name}
+
+Agent description:
+{a.description}
+
+Agent capabilities:
+{chr(10).join(f"- {c}" for c in caps)}
+
+Agent skills:
+{chr(10).join(f"- {s}" for s in skills)}
+"""
+        blocks.append(block.strip())
+
+    return "\n\n---\n\n".join(blocks)
+
+
+async def dynamic_instruction(ctx):
+    agents = root_agent.sub_agents
+    agent_context = await build_agent_prompt(agents)
+    
+    return f"""
+{BASE_INSTRUCTION}
+
+AVAILABLE AGENTS:
+{agent_context}
+
+AGENT SELECTION POLICY:
+- Select based on skills, domain, capabilities
+- DO NOT rely only on description
+
+""".strip()

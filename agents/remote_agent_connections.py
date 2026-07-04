@@ -9,15 +9,22 @@ import httpx
 import asyncio
 from typing import Dict , List,Any,Optional
 from a2a.client import A2AClient
+from a2a.types import Message as A2AMessage, Role
+from google.adk.events.event import Event
+from google.genai import types as genai_types
+from google.genai.types import Part
 from utils.agent_card_extractor import extract_description_capabilities_skills
-from a2a.client.card_resolver import A2ACardResolver
+from google.adk.a2a.logs.log_utils import build_a2a_request_log
 
+from a2a.client.card_resolver import A2ACardResolver
 from pydantic import PrivateAttr
 import json
 import re
 
 META_TOKEN_RE = re.compile(r"^\[META:TOKEN_USAGE\]\s*(\{.*\})\s*$")
 logger = logging.getLogger(__name__)
+
+
 
 
 
@@ -111,6 +118,7 @@ class RemoteServerManager(RemoteA2aAgent):
         self._version = value
 
 
+
     async def ensure_metadata(self):
         if getattr(self, "_metadata_hydrated", False):
             return
@@ -142,26 +150,41 @@ class RemoteServerManager(RemoteA2aAgent):
     def _construct_message_parts_from_session(self, ctx):
         """
         Build A2A message parts using ONLY the last user event to prevent
-        token bleeding. Optionally filters orchestrator/tool chatter text.
-        Also attaches a known context_id (remote state), if present.
+        token bleeding. Also attaches context_id from StateManager cache.
         """
+
         events = ctx.session.events or []
         last_user_event = None
 
+        # ✅ Find last REAL user message (skip yes/no approvals)
         for e in reversed(events):
-            if e.author == "user":
-                last_user_event = e
-                break
+            if e.author != "user":
+                continue
+
+            text_parts = getattr(e.content, "parts", []) or []
+
+            is_approval = False
+            for p in text_parts:
+                txt = getattr(p, "text", "")
+                if isinstance(txt, str) and txt.strip().lower() in ["yes", "y", "no", "n"]:
+                    is_approval = True
+                    break
+
+            if is_approval:
+                continue
+
+            last_user_event = e
+            break
 
         if not last_user_event or not getattr(last_user_event, "content", None):
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("[%s] No last user event (with content) found; nothing to send.", self.name)
+            logger.debug("[%s] No last user event found", self.name)
             return [], None
 
+        # ✅ Build message parts
         message_parts = []
         parts = getattr(last_user_event.content, "parts", None) or []
+
         for part in parts:
-            # Optionally skip orchestration noise (only for plain text parts)
             if self._filter_orchestration_noise:
                 text = getattr(part, "text", None)
                 if isinstance(text, str) and self._is_noise_text(text):
@@ -170,17 +193,40 @@ class RemoteServerManager(RemoteA2aAgent):
             converted = self._genai_part_converter(part)
             if not isinstance(converted, list):
                 converted = [converted] if converted else []
+
             message_parts.extend(converted)
 
-        # Attach latest known remote context_id (if any) so the server can retain state.
+        # =========================
+        # ✅ CONTEXT LOOKUP (FIXED)
+        # =========================
         context_id = None
-        for e in reversed(events):
-            md = getattr(e, "custom_metadata", {}) or {}
-            if md.get(A2A_METADATA_PREFIX + "context_id"):
-                context_id = md[A2A_METADATA_PREFIX + "context_id"]
-                break
 
-        # DEBUG summary of what we will send (safe, concise)
+        state_manager = getattr(ctx, "state_manager", None)
+
+        if state_manager:
+            try:
+                remote_state = state_manager.get_cached_remote_state(
+                    user_id=ctx.session.user_id,
+                    session_id=ctx.session.id,
+                    agent_name=self.name,
+                    scope_key=ctx.session.id,   # ✅ MUST match EventProcessor
+                )
+
+                if remote_state and remote_state.remote_context_id:
+                    context_id = remote_state.remote_context_id
+
+                logger.info(
+                    "[CACHE LOOKUP] agent=%s context_id=%s",
+                    self.name,
+                    context_id,
+                )
+
+            except Exception:
+                logger.exception("[STATE CACHE READ FAILED]")
+
+        # =========================
+        # ✅ DEBUG LOGGING
+        # =========================
         if logger.isEnabledFor(logging.DEBUG):
             try:
                 summary = self._summarize_parts_for_log(
@@ -188,7 +234,9 @@ class RemoteServerManager(RemoteA2aAgent):
                     text_preview_len=self._text_preview_len,
                     max_text_previews=self._max_text_previews,
                 )
+
                 approx_tokens = self._estimate_tokens(summary.get("total_text_chars", 0))
+
                 logger.debug(
                     (
                         "[%s] A2A outbound summary | parts=%d | text_parts=%d | file_parts=%d "
@@ -205,9 +253,9 @@ class RemoteServerManager(RemoteA2aAgent):
                     summary["text_previews_str"],
                     summary["file_previews_str"],
                 )
-            except Exception as log_ex:
-                # Never allow logging to disrupt flow
-                logger.debug("[%s] Error summarizing outbound parts: %s", self.name, log_ex)
+
+            except Exception:
+                logger.debug("[%s] Error summarizing parts", self.name)
 
         return message_parts, context_id
 
@@ -226,6 +274,8 @@ class RemoteServerManager(RemoteA2aAgent):
 
         content = getattr(event, "content", None)
         parts = getattr(content, "parts", None) if content else None
+
+
 
         if not parts:
             return event

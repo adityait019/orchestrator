@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "a2a-sdk[postgresql]>=0.3.22",
+    "aiofiles>=25.1.0",
     "alembic>=1.18.4",
     "dotenv>=0.9.9",
     "google-adk>=1.25.0",

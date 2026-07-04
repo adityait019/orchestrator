@@ -51,13 +51,31 @@ async def add_agent(payload: AddAgentRequest, db: AsyncSession = Depends(get_db)
     if "name" not in agent_card:
         raise HTTPException(status_code=400, detail="Agent card must contain a 'name' field")
     if agent_card["name"] != payload.name:
-        raise HTTPException(status_code=400, detail="Agent name in card does not match payload")
+        raise HTTPException(status_code=400, detail=f"Agent name in card does not match payload it should be {agent_card['name']}")
 
-    result = await db.execute(select(AgentRegistry).where(AgentRegistry.name == payload.name,AgentRegistry.host==payload.host,AgentRegistry.port==payload.port))
+    result = await db.execute(select(AgentRegistry).where(AgentRegistry.host==payload.host,AgentRegistry.port==payload.port))
     existing = result.scalar_one_or_none()
 
     if existing:
-        raise HTTPException(status_code=400, detail="Agent already registered")
+        # TEMPORARY SOLUTION IN FUTURE MAY BE I WILL CHANGE THE LOGIC
+
+
+        now=datetime.now(timezone.utc)
+
+        temp=existing.name
+        existing.name=payload.name
+        existing.agent_card=agent_card
+        existing.created_at=now
+        existing.last_health_check=now
+        existing.is_active=True
+        existing.is_healthy=True
+    
+
+        await db.commit()
+        await db.refresh(existing)
+
+        return {"message": f"⚙️..This Host:- {payload.host} and PORT Number:- {payload.port} was Already Blocked by the AGENT:- {temp} So Updating it using Latest Agent:- {existing.name} "}
+
 
 
     now=datetime.now(timezone.utc)

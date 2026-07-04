@@ -1,15 +1,47 @@
 #agent.py
-from google.adk.agents.llm_agent import Agent
+from google.genai.types import GenerateContentConfig
+from google.adk.agents.llm_agent import LlmAgent
 import os
 from google.adk.models.lite_llm import LiteLlm
 import logging
-
+from agents.hitl_handler import hitl_after_model_callback,hitl_before_model_callback
+from google.adk.tools.load_memory_tool import load_memory_tool
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
+content_config=GenerateContentConfig(
+    temperature=0.1,
+    top_p=0.9,
+    max_output_tokens=1024,
+    stop_sequences=["<END_PLAN>"],
+)
+BASE_INSTRUCTION = """
+You are an orchestrator that can either:
 
+1. Respond directly if the request is simple or general
+2. Delegate to an agent if the task requires specific capabilities or skills
 
+When deciding:
+
+- Compare user intent with:
+  • agent capabilities
+  • agent skills
+  • domains
+
+- Prefer agents when:
+  • specialized processing is needed
+  • external systems are involved
+  • actions must be executed
+
+- Prefer self-response when:
+  • the request is general conversation
+  • no agent adds value
+
+When transferring:
+- Select the most relevant agent based on capabilities and skills
+- Do not guess — rely on metadata provided
+""".strip()
 
 DEPLOYMENT_NAME=os.environ["DEPLOYMENT_NAME"]
 AZURE_API_KEY=os.environ['AZURE_API_KEY']
@@ -25,31 +57,17 @@ llm = LiteLlm(model=MODEL,
 
 
 
-root_agent = Agent(
+root_agent = LlmAgent(
     name='Cortex',
     model=llm,
     description='A central orchestrator that understands user intent and coordinates specialized agents to complete tasks.',
-    instruction="""
-You are Cortex, an Orchestrator Assistant. Your job is to understand user requests,
-choose the right sub-agent(s), and coordinate tool calls to complete the task.
-
-MANDATORY RULES:
-- NEVER TRY TO DO THE WORK BY YOURSELF
-- IF YOU DO NOT HAVE SPECIALISED AGENTS TO COMPLETE THE USER TASK Just Response Him I can not do this work because I do not have  Agentic capabilities.
-
-GENERAL ORCHESTRATION
-- Break down user requests and route to one or more sub-agents.
-- ONLY read the TEXT 
-- DO NOT read IMAGE,FILES ETC.
-- When multiple actions are needed, call multiple agents in sequence and summarize results.
-- Always surface clear status, the actions you took, and the next steps if something failed.
-- When files exist in the session, forward them as file_data parts.
-**important** DO NOT break or try to read the urls example [image_urls, file_urls]  just forward the file_urls as it it.
-
-ERROR MANAGEMENT:
-- if some error happend tell user about it in human readable format.
-""".strip(),
     sub_agents=[],
+    generate_content_config=content_config,
+    after_model_callback=hitl_after_model_callback,
+    before_model_callback=hitl_before_model_callback,
+    tools=[load_memory_tool]
+    
+
 )
 
 

@@ -1,36 +1,30 @@
 import json
 import logging
+import asyncio
+
 from google.genai.types import Content, Part
 from fastapi import WebSocketDisconnect
-import asyncio
+
 from websocket.ws_emitter import WSEmitter
 from websocket.event_processor import EventProcessor
-from services.invocation_context import InvocationContext
-from core.config import DEFAULT_USER
-import uuid
+from services.invocation_context import InvocationContext, AgentRuntime
 from services.chat_history_service import chat_history_service
+
 logger = logging.getLogger(__name__)
 
-AUTH_TIMEOUT_SECONDS = 10    
+AUTH_TIMEOUT_SECONDS = 10
 
 
 class WebSocketHandler:
 
-    def __init__(
-        self,
-        runner,
-        session_manager,
-        workflow_service,
-        agent_service,
-        artifact_service,
-        file_service,
-    ):
+    def __init__(self, runner, session_manager, workflow_service, agent_service, artifact_service, file_service, state_manager):
         self.runner = runner
         self.session_manager = session_manager
         self.workflow = workflow_service
         self.agent_service = agent_service
         self.artifact_service = artifact_service
         self.file_service = file_service
+        self.state_manager = state_manager
 
     async def handle(self, websocket, session_id: str):
 
@@ -38,63 +32,31 @@ class WebSocketHandler:
         emitter = WSEmitter(websocket)
         await emitter.connection_established(session_id)
 
-        # ─────────────────────────────────────────────
-        # 🔐 AUTH HANDSHAKE
-        # ─────────────────────────────────────────────
+        # =========================
+        # AUTH
+        # =========================
         try:
-            frame = await asyncio.wait_for(
-                websocket.receive_json(),
-                timeout=AUTH_TIMEOUT_SECONDS,
-            )
-            logger.info(f"THIS is Frame {frame}")
-
-        except asyncio.TimeoutError:
-            await emitter._safe_send({"type": "auth_failed", "detail": "auth timeout"})
-            await websocket.close(code=4401)
-            return
-
+            frame = await asyncio.wait_for(websocket.receive_json(), timeout=AUTH_TIMEOUT_SECONDS)
         except Exception:
-            await emitter._safe_send({"type": "auth_failed", "detail": "invalid JSON"})
+            await emitter._safe_send({"type": "auth_failed"})
             await websocket.close(code=4401)
             return
 
         if frame.get("type") != "auth":
-            await emitter._safe_send({
-                "type": "auth_failed",
-                "detail": "first frame must be type=auth"
-            })
             await websocket.close(code=4401)
             return
 
-        token = frame.get("access_token")
         user_id = frame.get("user_id")
         tenant_id = frame.get("tenant_id")
+        token = frame.get("access_token")
         roles = frame.get("roles", [])
-
-        if not token or not isinstance(token, str):
-            await emitter._safe_send({
-                "type": "auth_failed",
-                "detail": "missing or invalid access_token"
-            })
-            await websocket.close(code=4401)
-            return
-
-        await emitter._safe_send({"type": "auth_ok", "scopes": roles})
-
+        
+        await emitter._safe_send({"type": "auth_ok"})
         logger.info(
             "WS authenticated: user=%s tenant=%s roles=%s session=%s",
             user_id, tenant_id, roles, session_id,
         )
-
-        # user_id = str(uuid.uuid4())  # TEMP: generate random user_id for now, until we have real auth in place
-        # tenant_id = str(uuid.uuid4())  # TEMP: generate random tenant_id for now, until we have real auth in place
-        # roles = ["user"]  # TEMP: default role
-
-        # ✅ Session setup
-        await self.session_manager.ensure_session(
-            user_id=user_id,
-            session_id=session_id,
-        )
+        await self.session_manager.ensure_session(user_id, session_id)
         self.session_manager.mark_connected(user_id, session_id)
 
         processor = EventProcessor(
@@ -102,200 +64,188 @@ class WebSocketHandler:
             self.agent_service,
             self.artifact_service,
             self.file_service,
+            self.session_manager,
+            self.state_manager,
         )
 
         try:
             while True:
+
                 try:
                     raw = await websocket.receive_text()
                 except WebSocketDisconnect:
-                    logger.info("🔌 Client disconnected while waiting for input")
+                    logger.info("Client disconnected")
                     break
+                except Exception as e:
+                    logger.exception("Receive failed: %s", e)
+                    continue
 
                 try:
                     obj = json.loads(raw)
-                    prompt = (obj.get("prompt") or obj.get("content") or "").strip()
+                    prompt = (obj.get("prompt") or "").strip()
                 except Exception:
                     prompt = raw.strip()
 
                 if not prompt:
                     continue
 
-                # ✅ Save user message immediately (before processing)
+                # =========================
+                # START WORKFLOW
+                # =========================
+                workflow = await self.workflow.start_workflow(
+                    session_id=session_id,
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                )
+
+                invocation_ctx = InvocationContext()
+                invocation_ctx.state_manager = self.state_manager
+
+                orch_state = await self.state_manager.load_orchestration_state(
+                    user_id=user_id,
+                    session_id=session_id
+                )
+
+                # ✅ CRITICAL SAFETY INIT
+                if orch_state.task is None:
+                    orch_state.task = {}
+
+
+                invocation_ctx.orch_state = orch_state
+
+                # ✅ Plan
+
+                context = {
+                    "workflow_id": workflow.session_id,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "prompt": prompt,
+                    "invocation_ctx": invocation_ctx,
+                    "tenant_id": tenant_id,
+                }
+
+                # =========================
+                # INITIAL AGENT
+                # =========================
+                root_invocation, _ = await self.agent_service.start_invocation(
+                    workflow_id=workflow.session_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    agent_name="Cortex",
+                    prompt=prompt,
+                    args={},
+                )
+
+                runtime = AgentRuntime(
+                    invocation_id=root_invocation.id,
+                    agent_name="Cortex",
+                )
+
+                invocation_ctx.runtimes[root_invocation.id] = runtime
+                invocation_ctx.active_invocation_id = root_invocation.id
+
+                # =========================
+                # BUILD MESSAGE
+                # =========================
+                parts = [Part(text=prompt)]
+
+                parts = await self.session_manager.attach_last_upload(
+                    parts, user_id, session_id
+                )
+
+
+                user_msg = Content(role="user", parts=parts)
+
+                await emitter.status("turn_started")
+
+                # =========================
+                # RUN AGENT LOOP
+                # =========================
                 try:
+                    async for event in self.runner.run_async(
+                        user_id=user_id,
+                        session_id=session_id,
+                        new_message=user_msg,
+                    ):
+                        try:
+                            await processor.process(event, context)
+                        except Exception as e:
+                            logger.exception("[STREAM ERROR]: %s", e)
+                        finally:
+                            await asyncio.sleep(0)
+
+                except Exception:
+                    logger.exception("[RUN ERROR]")
+                    await emitter.bot_message("❌ Internal error")
+                    continue
+
+                # =========================
+                # FINAL OUTPUT
+                # =========================
+                active_invocation_id = invocation_ctx.active_invocation_id
+                
+                final_runtime=None
+                if active_invocation_id:
+                    final_runtime = invocation_ctx.runtimes.get(active_invocation_id)
+
+                if not final_runtime:
+                    logger.error("[NO FINAL RUNTIME]")
+                    await emitter.done()
+                    continue
+
+                output = (
+                    final_runtime.output_payload
+                    if final_runtime.output_payload
+                    else final_runtime.buffer
+                )
+
+                orch_state = invocation_ctx.orch_state
+                orch_task = getattr(orch_state, "task", {}) if orch_state else {}
+                # ✅ BLOCK completion for multi-turn
+                if orch_task and orch_task.get("interaction") == "request_input":
+                    logger.info("⏸ Waiting for user input — not completing")
+
+                elif not getattr(final_runtime, "completed", False):
+                    await self.agent_service.complete_invocation(
+                        final_runtime.invocation_id,
+                        output,
+                        final_runtime.input_tokens,
+                        final_runtime.output_tokens,
+                        final_runtime.total_tokens,
+                    )
+
+                # ✅ SAVE CHAT
+                if output:
+                    await chat_history_service.append_message(
+                        session_manager=self.session_manager,
+                        user_id=user_id,
+                        tenant_id=tenant_id,
+                        session_id=session_id,
+                        message={"type": "user", "content": prompt},
+                    )
+
                     await chat_history_service.append_message(
                         session_manager=self.session_manager,
                         user_id=user_id,
                         tenant_id=tenant_id,
                         session_id=session_id,
                         message={
-                            "type": "user",
-                            "content": prompt,
+                            "type": "ai",
+                            "content": str(output),
+                            "agent_name": final_runtime.agent_name,
                         },
                     )
-                except Exception:
-                    logger.exception("Failed saving user message early")
 
-
-                try:
-                    # ✅ Start workflow
-                    workflow = await self.workflow.start_workflow(session_id=session_id, user_id=user_id,tenant_id=tenant_id,)
-
-                    invocation_ctx = InvocationContext()
-
-                    root_invocation = await self.agent_service.start_root_invocation(
-                        workflow_id=workflow.session_id,
-                        user_id=user_id,
-                        session_id=session_id,
-                        prompt=prompt,
-                    )
-
-                    invocation_ctx.invocation_id = root_invocation.id
-                    invocation_ctx.agent_name = "Cortex"
-                    invocation_ctx.agent_session_id = f"{session_id}::Cortex"
-
-                    context = {
-                        "workflow_id": workflow.session_id,
-                        "user_id": user_id,
-                        "session_id": session_id,
-                        "prompt": prompt,
-                        "invocation_ctx": invocation_ctx,
-                        "tenant_id": tenant_id
-                    }
-
-                    if emitter.closed:
-                        break
-
-                    await emitter.status("turn_started")
-
-                    # ✅ Build message
-                    parts = [Part(text=prompt)]
-                    parts = await self.session_manager.attach_last_upload(
-                        parts,
-                        user_id=user_id,
-                        session_id=session_id,
-                    )
-
-                    # ✅ Attach token
-                    parts = await self.session_manager.attach_tool_tokens(
-                        parts,
-                        payload={"access_token": token},
-                        session_id=session_id
-                    )
-
-                    user_msg = Content(role="user", parts=parts)
-
-
-
-                    try:
-                        # ✅ STREAM processing (SAFE)
-                        async for event in self.runner.run_async(
-                            user_id=user_id,
-                            session_id=session_id,
-                            new_message=user_msg,
-                        ):
-                            if emitter.closed:
-                                logger.info("🔌 Stopping stream: WS closed")
-                                break
-
-                            try:
-                                await processor.process(event, context)
-                            except WebSocketDisconnect:
-                                logger.info("🔌 Disconnected during processing")
-                                break
-
-                        # ✅ finalize only if still connected
-                        if not emitter.closed:
-                            ic = context["invocation_ctx"]
-
-                            if ic.invocation_id:
-                                try:
-                                    output = ic.output_payload if ic.output_payload is not None else (ic.buffer or None)
-                                    await self.agent_service.complete_invocation(
-                                        ic.invocation_id,
-                                        output,
-                                        ic.input_tokens,
-                                        ic.output_tokens,
-                                        ic.total_tokens,
-                                    )
-                                except Exception:
-                                    logger.exception("Failed finalizing invocation")
-
-                            # await self.workflow.complete_workflow(workflow.session_id)
-                    finally:
-                        try:
-                            await self.workflow.complete_workflow(workflow.session_id)
-                        except Exception:
-                            logger.exception("🔥 Error completing workflow")
-
-                        await emitter.done()
-
-
-
-                    # ✅ Save USER message (append-only)
-                    try:
-                        ic= context["invocation_ctx"]
-
-                        # ✅ Extract AI output safely
-                        ai_output = ""
-
-                        if ic:
-                            payload = ic.output_payload
-
-                            if isinstance(payload, dict):
-                                ai_output = payload.get("text") or str(payload)
-                            elif isinstance(payload, str):
-                                ai_output = payload
-                            elif payload is None:
-                                ai_output = ic.buffer or ""
-                            else:
-                                ai_output = str(payload)
-                        if  ai_output :
-                        # ✅ Save AI message (append-only)
-                            await chat_history_service.append_message(
-                                session_manager=self.session_manager,
-                                user_id=user_id,
-                                tenant_id=tenant_id,
-                                session_id=session_id,
-                                message={
-                                    "type": "ai",
-                                    "content": ai_output,
-                                    "input_tokens": ic.input_tokens if ic else None,
-                                    "output_tokens": ic.output_tokens if ic else None,
-                                    "artifact_ids": None,
-                                    "agent_name": ic.agent_name if ic else None,
-                                },
-                            )
-
-                    except Exception:
-                        logger.exception("Failed saving AI message (session=%s user=%s)",session_id,user_id)
-
-
-
-                except WebSocketDisconnect:
-                    logger.info("🔌 Client disconnected mid-turn")
-                    break
-
-                except Exception as e:
-                    logger.exception("🔥 WS processing error")
-
-                    if not emitter.closed:
-                        # await emitter.bot_message(
-                        #     f"❌ ERROR: {type(e).__name__}: {str(e)}"
-                        # )
-                    
-                        await emitter.bot_message({
-                            "type": "error",
-                            "error": str(e),
-                            "error_type": type(e).__name__
-                        })
-
+                # ✅ DONE SIGNAL (FIXED)
+                if orch_task and orch_task.get("interaction") == "request_input":
+                    logger.info("⏸ Not sending done() — awaiting input")
+                else:
+                    await emitter.done()
 
         except WebSocketDisconnect:
-            logger.info("🔌 Client disconnected (outer loop)")
+            logger.info("Client disconnected")
 
         finally:
+            await self.workflow.complete_workflow(session_id)
             self.session_manager.mark_disconnected(user_id, session_id)
-            logger.info("✅ Cleanup complete")
-
-    
+            logger.info("Cleanup done")

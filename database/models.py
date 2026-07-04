@@ -140,10 +140,22 @@ class AgentInvocation(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # ✅ NEW (Phase 1)
+
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    #Adding Planner
+    plan_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    task_node_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
+    parent_invocation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_invocations.id"),
+        nullable=True,
+    )
+
+    input_artifacts: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    output_artifacts: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     orchestration_session: Mapped["OrchestrationSession"] = relationship(
         back_populates="invocations"
@@ -342,6 +354,7 @@ class ChatMessage(Base):
         nullable=False,
         index=True,
     )
+
 
 Index(
     "ix_chat_messages_session_created",
