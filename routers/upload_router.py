@@ -41,6 +41,8 @@ from fastapi.responses import JSONResponse
 
 from auth.deps import get_current_user
 from services.file_service import FileService
+from services.artifact_service import ArtifactService
+from database.session import AsyncSessionLocal
 from session.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,8 @@ file_service = FileService(
     signing_secret=os.getenv("SECRET_KEY", "dev-only-secret"),
     base_url=PUBLIC_BASE_URL,
 )
+
+artifact_service = ArtifactService(db_session_factory=AsyncSessionLocal)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +146,7 @@ async def upload_files(
                     "file_name": safe_name,
                     "file_path": str(file_path),
                     "file_size": file_path.stat().st_size,
+                    "mime_type": uploaded_file.content_type,
                 }
             )
 
@@ -155,6 +160,28 @@ async def upload_files(
                 file_id=file_id,
                 filename=f["file_name"],
             )
+
+        # Persist each upload as an Artifact row so /files/... lookups
+        # (file_router.py) can resolve via the DB instead of only the
+        # filesystem-path fallback.
+        for f in uploaded_files:
+            try:
+                await artifact_service.store_artifact(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    file_id=file_id,
+                    filename=f["file_name"],
+                    signed_url=f["file_url"],
+                    path=f["file_path"],
+                    mime_type=f.get("mime_type"),
+                    file_size=f.get("file_size"),
+                )
+            except Exception:
+                logger.exception(
+                    "⚠️ Failed to persist artifact record for %s (upload still succeeded on disk)",
+                    f["file_name"],
+                )
 
         upload_details = {
             "file_id": file_id,

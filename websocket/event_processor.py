@@ -1,3 +1,4 @@
+#websocket/event_processor_new.py
 from __future__ import annotations
 from tools.helper_downloads import fetch_remote_file
 from websocket.event_normalizer import normalize_event
@@ -5,9 +6,24 @@ from state.models import RemoteAgentState
 import asyncio
 import logging
 import hashlib
+import json
 
 logger = logging.getLogger(__name__)
+INPUT_REQUIRED_STATES = {
+    "input-required",
+    "input_required",
+    "inputrequired",
+}
 
+TERMINAL_STATES = {
+    "completed",
+    "complete",
+    "done",
+    "failed",
+    "canceled",
+    "cancelled",
+    "unknown",
+}
 
 class EventProcessor:
 
@@ -176,20 +192,66 @@ class EventProcessor:
         # ✅ A2A PROGRESS (FIXED)
         # =========================
         if normalized.a2a_state:
+  
+            raw_state = str(normalized.a2a_state or "").lower().strip()
+            existing_task = ctx["invocation_ctx"].orch_state.task or {}
 
             interaction = None
 
-            # ✅ ONLY trust interaction from agent text response
             if normalized.text:
                 interaction = meta.get("interaction")
 
-            ctx["invocation_ctx"].orch_state.task = {
-                "owner": runtime.agent_name,
-                "state": normalized.a2a_state,
-                "task_id": normalized.a2a_task_id,
-                "interaction": interaction
-            }
+            # ✅ Infer interaction from A2A state
+            if not interaction and raw_state in INPUT_REQUIRED_STATES:
+                interaction = "request_input"
 
+            # ✅ Terminal state should clear active task ownership
+            if raw_state in TERMINAL_STATES:
+                ctx["invocation_ctx"].orch_state.task = None
+                ctx["invocation_ctx"].orch_state.active_agent = None
+                inv_ctx.pending_state_update = True
+
+                logger.info(
+                    "[TASK CLEARED] state=%s agent=%s",
+                    raw_state,
+                    runtime.agent_name,
+                )
+
+            else:
+                # ctx["invocation_ctx"].orch_state.task = {
+                #     "owner": runtime.agent_name,
+                #     "state": raw_state,
+                #     "task_id": normalized.a2a_task_id or existing_task.get("task_id"),
+                #     "context_id": normalized.a2a_context_id or existing_task.get("context_id"),
+                #     "interaction": (
+                #         interaction
+                #         if interaction is not None
+                #         else existing_task.get("interaction")
+                #     ),
+                # }
+
+                ctx["invocation_ctx"].orch_state.task = {
+                    "owner": runtime.agent_name,
+                    "state": normalized.a2a_state or existing_task.get("state"),
+                    "task_id": normalized.a2a_task_id or existing_task.get("task_id"),
+                    "context_id": normalized.a2a_context_id or existing_task.get("context_id"),
+                    "interaction": (
+                        interaction
+                        if interaction is not None
+                        else existing_task.get("interaction")
+                    ),
+                }
+
+                inv_ctx.pending_state_update = True
+
+                logger.info(
+                    "[TASK PROGRESS UPDATE] %s",
+                    ctx["invocation_ctx"].orch_state.task,
+                )
+            inv_ctx.pending_state_update = True
+
+
+            
             await self.emitter.agent_progress(
                 agent=runtime.agent_name,
                 state=normalized.a2a_state,
@@ -250,23 +312,68 @@ class EventProcessor:
             if phase == "call":
                 await self.emitter.tool_call(name=tool_name, args={}, agent=runtime.agent_name)
 
+            # elif phase == "response":
+            #     if getattr(runtime, "last_tool_response", None) == data:
+            #         return
+
+            #     runtime.last_tool_response = data
+
+            #     await self.emitter.tool_result(
+            #         name=tool_name,
+            #         response=data or {},
+            #         agent=runtime.agent_name,
+            #     )
+
             elif phase == "response":
                 if getattr(runtime, "last_tool_response", None) == data:
-                    return
+                    logger.info(
+                        "[DUPLICATE TOOL RESULT SKIPPED] tool=%s agent=%s",
+                        tool_name,
+                        runtime.agent_name,
+                    )
+                else:
+                    runtime.last_tool_response = data
 
-                runtime.last_tool_response = data
-
-                await self.emitter.tool_result(
-                    name=tool_name,
-                    response=data or {},
-                    agent=runtime.agent_name,
-                )
+                    await self.emitter.tool_result(
+                        name=tool_name,
+                        response=data or {},
+                        agent=runtime.agent_name,
+                    )
 
         # =========================
         # ✅ TEXT STREAMING
         # =========================
+
         if normalized.text:
             clean = normalized.text.strip()
+
+            try:
+                payload = json.loads(clean)
+
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("interaction")
+                ):
+                    interaction = payload["interaction"]
+                    existing_task = ctx["invocation_ctx"].orch_state.task or {}
+                    ctx["invocation_ctx"].orch_state.task = {
+                        "owner": runtime.agent_name,
+                        "state": normalized.a2a_state,
+                        "task_id": normalized.a2a_task_id,
+                        "context_id": normalized.a2a_context_id,
+                        "interaction": (interaction if interaction is not None else existing_task.get("interaction")),
+                    }
+
+                    inv_ctx.pending_state_update = True
+
+                    logger.info(
+                        "[TASK UPDATED FROM JSON] %s",
+                        ctx["invocation_ctx"].orch_state.task
+                    )
+
+            except Exception:
+                pass
+
             h = self._hash(clean)
 
             if clean and h != getattr(runtime, "last_hash", None):

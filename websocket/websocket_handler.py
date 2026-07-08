@@ -1,3 +1,4 @@
+#websocket/websocket_testing.py
 import json
 import logging
 import asyncio
@@ -14,7 +15,21 @@ logger = logging.getLogger(__name__)
 
 AUTH_TIMEOUT_SECONDS = 10
 
-
+BREAK_WORDS = {
+    "thanks",
+    "thank you",
+    "ok",
+    "okay",
+    "cool",
+    "great",
+    "fine",
+    "bye"
+}
+INPUT_REQUIRED_STATES = {
+    "input-required",
+    "input_required",
+    "inputrequired",
+}
 class WebSocketHandler:
 
     def __init__(self, runner, session_manager, workflow_service, agent_service, artifact_service, file_service, state_manager):
@@ -58,7 +73,7 @@ class WebSocketHandler:
         )
         await self.session_manager.ensure_session(user_id, session_id)
         self.session_manager.mark_connected(user_id, session_id)
-
+        logger.info("WS connected successfully")
         processor = EventProcessor(
             emitter,
             self.agent_service,
@@ -67,12 +82,13 @@ class WebSocketHandler:
             self.session_manager,
             self.state_manager,
         )
-
+        logger.info("Event processor initialized")
         try:
             while True:
 
                 try:
                     raw = await websocket.receive_text()
+                    logger.info("Received raw message: %s", raw)
                 except WebSocketDisconnect:
                     logger.info("Client disconnected")
                     break
@@ -82,7 +98,9 @@ class WebSocketHandler:
 
                 try:
                     obj = json.loads(raw)
-                    prompt = (obj.get("prompt") or "").strip()
+                    # prompt = (obj.get("prompt") or "").strip()
+                    prompt =(obj.get("prompt") or obj.get("content") or "").strip()
+                    
                 except Exception:
                     prompt = raw.strip()
 
@@ -98,6 +116,7 @@ class WebSocketHandler:
                     tenant_id=tenant_id,
                 )
 
+                logger.info("Workflow started: %s", workflow.session_id)
                 invocation_ctx = InvocationContext()
                 invocation_ctx.state_manager = self.state_manager
 
@@ -105,15 +124,42 @@ class WebSocketHandler:
                     user_id=user_id,
                     session_id=session_id
                 )
+                active_task = orch_state.task or {}
+                
+                logger.info(
+                    "[TASK LOADED] %s",
+                    orch_state.task
+                )
+                is_break_message = (
+                    prompt.lower().strip() in BREAK_WORDS
+                )
 
+                # is_continuation = (
+                #     active_task.get("interaction") == "request_input"
+                #     and active_task.get("owner")
+                #     and not is_break_message
+                # )
+
+                task_state = str(active_task.get("state") or "").lower().strip()
+                task_interaction = str(active_task.get("interaction") or "").lower().strip()
+
+                is_input_required = (
+                    task_interaction == "request_input"
+                    or task_state in INPUT_REQUIRED_STATES
+                )
+
+                is_continuation = (
+                    bool(active_task.get("owner"))
+                    and is_input_required
+                    and not is_break_message
+                )
+
+                logger.info("Loaded orchestration state: %s", orch_state)
                 # ✅ CRITICAL SAFETY INIT
-                if orch_state.task is None:
-                    orch_state.task = {}
-
 
                 invocation_ctx.orch_state = orch_state
 
-                # ✅ Plan
+
 
                 context = {
                     "workflow_id": workflow.session_id,
@@ -124,26 +170,51 @@ class WebSocketHandler:
                     "tenant_id": tenant_id,
                 }
 
+                context.update({
+                    "continuation": is_continuation,
+                    "continued_task": active_task if is_continuation else None,
+                })
+                
+                logger.info(
+                    "[CONTINUATION] %s task=%s",
+                    is_continuation,
+                    active_task,
+                )
+                
+                logger.info(
+                    "[ROUTING] state=%s interaction=%s owner=%s input_required=%s",
+                    active_task.get("state"),
+                    active_task.get("interaction"),
+                    active_task.get("owner"),
+                    is_input_required,
+                )
                 # =========================
                 # INITIAL AGENT
                 # =========================
+
+                agent_name = "Cortex"  # default agent
+                if is_continuation:
+                    agent_name = active_task.get("owner")
+                    logger.info("Continuing with agent: %s", agent_name)
                 root_invocation, _ = await self.agent_service.start_invocation(
                     workflow_id=workflow.session_id,
                     user_id=user_id,
                     session_id=session_id,
-                    agent_name="Cortex",
+                    agent_name=agent_name,
                     prompt=prompt,
                     args={},
                 )
 
+                logger.info("Started root invocation: %s", root_invocation.id)
                 runtime = AgentRuntime(
                     invocation_id=root_invocation.id,
-                    agent_name="Cortex",
+                    agent_name=root_invocation.agent_name,
                 )
 
                 invocation_ctx.runtimes[root_invocation.id] = runtime
                 invocation_ctx.active_invocation_id = root_invocation.id
 
+                logger.info("Initialized invocation context: %s", invocation_ctx)
                 # =========================
                 # BUILD MESSAGE
                 # =========================
@@ -153,11 +224,17 @@ class WebSocketHandler:
                     parts, user_id, session_id
                 )
 
+                parts = await self.session_manager.attach_tool_tokens(
+                    parts,
+                    payload={"access_token": token},
+                    session_id=session_id,
+                )
 
                 user_msg = Content(role="user", parts=parts)
 
                 await emitter.status("turn_started")
 
+                logger.info("Starting agent loop for prompt: %s", prompt)
                 # =========================
                 # RUN AGENT LOOP
                 # =========================
@@ -168,7 +245,9 @@ class WebSocketHandler:
                         new_message=user_msg,
                     ):
                         try:
+
                             await processor.process(event, context)
+                            logger.info("Processed event: %s", event)
                         except Exception as e:
                             logger.exception("[STREAM ERROR]: %s", e)
                         finally:
@@ -200,10 +279,10 @@ class WebSocketHandler:
                 )
 
                 orch_state = invocation_ctx.orch_state
-                orch_task = getattr(orch_state, "task", {}) if orch_state else {}
+                orch_task = getattr(orch_state, "task", None) if orch_state else None
                 # ✅ BLOCK completion for multi-turn
                 if orch_task and orch_task.get("interaction") == "request_input":
-                    logger.info("⏸ Waiting for user input — not completing")
+                    logger.info("⏸ Waiting for user input")
 
                 elif not getattr(final_runtime, "completed", False):
                     await self.agent_service.complete_invocation(
@@ -237,10 +316,19 @@ class WebSocketHandler:
                     )
 
                 # ✅ DONE SIGNAL (FIXED)
-                if orch_task and orch_task.get("interaction") == "request_input":
-                    logger.info("⏸ Not sending done() — awaiting input")
-                else:
-                    await emitter.done()
+                if invocation_ctx.orch_state:
+                    await self.state_manager.save_orchestration_state(
+                        user_id=user_id,
+                        session_id=session_id,
+                        state=invocation_ctx.orch_state
+                    )
+
+                # if orch_task and orch_task.get("interaction") == "request_input":
+                #     logger.info("⏸ Not sending done() — awaiting input")
+                # else:
+                #     await emitter.done()
+                await emitter.done()
+
 
         except WebSocketDisconnect:
             logger.info("Client disconnected")

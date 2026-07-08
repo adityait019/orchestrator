@@ -458,6 +458,7 @@ Following this guide ensures:
 
 ```python
 
+
 import os
 import logging
 import json
@@ -769,21 +770,31 @@ async def execute_agent(query: str,session_id:str) -> AsyncGenerator[dict, None]
                     }
                 }
 
+
             elif item.type == "message_output_item":
-                # text = item.raw_item.content[0].text if item.raw_item.content else ""
-                raw_text = item.raw_item.content[0].text if item.raw_item.content else "" # type: ignore
+                raw_text = item.raw_item.content[0].text if item.raw_item.content else ""  # type: ignore
+                raw_text = (raw_text or "").strip()
+
+                interaction = "complete"
+                payload_to_emit = raw_text
+
+                # -------------------------------------------------
+                # 1. First try your strict Pydantic model
+                # -------------------------------------------------
+                parsed = None
 
                 try:
                     parsed = AgentResponse.model_validate_json(raw_text)
                 except Exception:
                     parsed = None
-                if parsed:
 
+                if parsed:
                     if parsed.type == "question":
                         yield {
                             "type": "agent_response",
-                            "payload": parsed.questions,
-                            "interaction": "request_input"
+                            # ✅ keep full structured response, not only questions
+                            "payload": raw_text,
+                            "interaction": "request_input",
                         }
                         return
 
@@ -791,16 +802,47 @@ async def execute_agent(query: str,session_id:str) -> AsyncGenerator[dict, None]
                         yield {
                             "type": "agent_response",
                             "payload": parsed.content,
-                            "interaction": "complete"
+                            "interaction": "complete",
                         }
+                        continue
 
-                else:
-                    # ✅ SAFE FALLBACK: do NOT force complete
-                    yield {
-                        "type": "agent_response",
-                        "payload": raw_text,
-                        "interaction": "complete" if raw_text else "request_input"
-                    }
+                # -------------------------------------------------
+                # 2. Robust fallback: inspect raw JSON manually
+                # -------------------------------------------------
+                try:
+                    raw_json = json.loads(raw_text)
+
+                    if isinstance(raw_json, dict):
+                        raw_type = str(raw_json.get("type") or "").lower().strip()
+                        raw_interaction = str(raw_json.get("interaction") or "").lower().strip()
+
+                        if raw_type == "question" or raw_interaction == "request_input":
+                            yield {
+                                "type": "agent_response",
+                                "payload": raw_text,
+                                "interaction": "request_input",
+                            }
+                            return
+
+                        if raw_type == "answer":
+                            yield {
+                                "type": "agent_response",
+                                "payload": raw_json.get("content", raw_text),
+                                "interaction": "complete",
+                            }
+                            continue
+
+                except Exception:
+                    pass
+
+                # -------------------------------------------------
+                # 3. Final fallback
+                # -------------------------------------------------
+                yield {
+                    "type": "agent_response",
+                    "payload": raw_text,
+                    "interaction": "complete" if raw_text else "request_input",
+                }
 
 
         else:
@@ -830,7 +872,6 @@ async def execute_agent(query: str,session_id:str) -> AsyncGenerator[dict, None]
     }
 
     yield {"type": "done", "payload": ""}
-
 
 
 
@@ -894,6 +935,24 @@ class DynamicFunctionAgentExecutor(AgentExecutor):
             role=Role.agent,
             parts=[self._make_text_part(text)],
         )
+
+
+    def _extract_interaction(self, ev: dict, text_payload: str) -> str:
+        interaction = ev.get("interaction")
+
+        if isinstance(interaction, str) and interaction.strip():
+            return interaction.strip()
+
+        try:
+            parsed = json.loads(text_payload)
+            if isinstance(parsed, dict):
+                value = parsed.get("interaction")
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        except Exception:
+            pass
+
+        return "complete"
 
     def _extract_query_text(self, context: RequestContext) -> str:
         if not context.message or not context.message.parts:
@@ -1007,8 +1066,10 @@ class DynamicFunctionAgentExecutor(AgentExecutor):
                     # ================================
                     if ev_type == "agent_response":
 
-                        interaction = ev.get("interaction", "complete")
-                        final_interaction = interaction  # ✅ ONLY set here
+                        # interaction = ev.get("interaction", "complete")
+                        # final_interaction = interaction  # ✅ ONLY set here
+                        interaction = self._extract_interaction(ev, payload)
+                        final_interaction = interaction
 
                         if isinstance(payload, list):
                             text_payload = "\n".join(
@@ -1055,8 +1116,20 @@ class DynamicFunctionAgentExecutor(AgentExecutor):
                         continue
 
 
-                return
+                # return
+                # ✅ IMPORTANT:
+                # If the stream finished normally and did not request user input,
+                # mark the A2A task as completed.
+                if final_interaction == "request_input":
+                    return
 
+                await updater.complete(
+                    message=self._make_message(
+                        final_response_text or "Task completed"
+                    )
+                )
+
+                return
 
             # ✅ NON-STREAMING CASE
             result = await out if inspect.isawaitable(out) else out
@@ -1094,576 +1167,122 @@ class DynamicFunctionAgentExecutor(AgentExecutor):
 # OUTPUT on test
 
 ```bash
-(orchestrator) PS C:\git_clones\cto_kolkata_repos\aditya\orchestrator_v2> uv run .\cli_testing.py
+orchestrator) PS C:\git_clones\cto_kolkata_repos\aditya\orchestrator_v2> uv run .\cli_testing.py
 🔌 Server: connection_established
 ✅ Authentication successful
 🤖 Connected to Orchestrator
-🧠 Session ID: 3ae2b08d-a903-4300-af2d-3e50365b0ce3
+🧠 Session ID: 1bc642ce-ce78-4d3a-bcf7-a4d239aa8483
 Type /help for commands
 
+You: Hi How are you?
+
+Bot:
+
+🤖 Cortex
+Hello! I'm here and ready to assist you. How can I help you today?
+
+----------------------------------------------------------------------
 You: /list
 
 📡 Active Agents:
 - UICouplingAnalysisAgent (10.73.83.83:10101)
 - LegacyApplicationDiscoveryAgent (10.73.83.83:10100)
-You: Analyze the following legacy JSP/Java code.STRICT RULES:1. Perform entity extraction2. Perform dependency analysis3. STOP after analysis4. DO NOT call summarize_findings yetReturn a JSON response with:- extracted classes- tables- APIs- dependency reportThen ask:- "Do you want me to proceed to final summary?"- "Include RAG knowledge?"- "Refine analysis?"Set:"type": "question""interaction": "request_input"Code:public class UserService {    public List<User> getUsers() {        String sql = "SELECT * FROM USERS";        return fetchUsers(sql);    }}public class OrderService {    public void getOrders() {        String sql = "SELECT * FROM ORDERS";    }}fetch("http://order-api/getOrders")
+You: Analyze the following legacy JSP/Java code and identify dependencies.IMPORTANT:Do the analysis first, but DO NOT finalize immediately.After analysis, ask me for confirmation before producing the final summary.When asking, include:- Extracted classes- Detected tables- APIs- Dependency relationshipsThen ask questions like:- "Do you want me to include RAG knowledge?"- "Should I refine the dependency analysis?"- "Proceed to final summary?"Code:public class UserService {    public List<User> getUsers() {        String sql = "SELECT * FROM USERS";        return fetchUsers(sql);    }}public class OrderService {    public void getOrders() {        String sql = "SELECT * FROM ORDERS";    }}fetch("http://order-api/getOrders")
 
 Bot:
 
-RAW: {'type': 'status', 'stage': 'turn_started', 'agent': None}
-
-RAW: {'type': 'bot_message', 'content': 'I suggest delegating this task to LegacyApplicationDiscoveryAgent.
-Do you want me to proceed? (yes/no)', 'agent': 'Cortex'}
-
 🤖 Cortex
 I suggest delegating this task to LegacyApplicationDiscoveryAgent. Do you want me to proceed? (yes/no)
-
-RAW: {'type': 'done', 'ts': '2026-06-30T06:26:38.040538'}
 
 ----------------------------------------------------------------------
 You: yes
 
 Bot:
 
-RAW: {'type': 'status', 'stage': 'turn_started', 'agent': None}
-
-RAW: {'type': 'status', 'stage': 'tool_started', 'agent': 'LegacyApplicationDiscoveryAgent'}
-
 🚀 Starting agent: LegacyApplicationDiscoveryAgent
-
-RAW: {'type': 'tool_call', 'name': 'transfer_to_agent', 'args': {'agent_name':
-'LegacyApplicationDiscoveryAgent'}, 'agent': 'LegacyApplicationDiscoveryAgent'}
 🛠️ transfer_to_agent  (agent: LegacyApplicationDiscoveryAgent)
 🔄 Switching → LegacyApplicationDiscoveryAgent
-
-RAW: {'type': 'tool_result', 'name': 'transfer_to_agent', 'response': {'result': None}, 'agent':
-'LegacyApplicationDiscoveryAgent'}
 ✅ transfer_to_agent
 {
   "result": null
 }
-
-RAW: {'type': 'debug_meta', 'meta': {'a2a:task_id': '92e552f3-386c-404c-9a4c-716b46876dcb', 'a2a:context_id':
-'047d4156-0e8a-4216-90a5-547a78d11040', 'a2a:request': {'kind': 'message', 'messageId':
-'613d5431-542b-4f19-b063-e1f92414937f', 'parts': [{'kind': 'text', 'text': 'Analyze the following legacy
-JSP/Java code.STRICT RULES:1. Perform entity extraction2. Perform dependency analysis3. STOP after analysis4.
-DO NOT call summarize_findings yetReturn a JSON response with:- extracted classes- tables- APIs- dependency
-reportThen ask:- "Do you want me to proceed to final summary?"- "Include RAG knowledge?"- "Refine
-analysis?"Set:"type": "question""interaction": "request_input"Code:public class UserService {    public
-List<User> getUsers() {        String sql = "SELECT * FROM USERS";        return fetchUsers(sql);    }}public
-class OrderService {    public void getOrders() {        String sql = "SELECT * FROM ORDERS";
-}}fetch("http://order-api/getOrders")'}, {'kind': 'text', 'text': '[META:TOOL_TOKENS] {"type":
-"tool_credentials", "access_token": "dev-token", "refresh_token": null}'}], 'role': 'user'}, 'a2a:response':
-{'contextId': '047d4156-0e8a-4216-90a5-547a78d11040', 'history': [{'contextId':
-'047d4156-0e8a-4216-90a5-547a78d11040', 'kind': 'message', 'messageId':
-'f92a9a46-8bec-416c-a2c5-6bad095f78c7', 'parts': [{'kind': 'text', 'text': 'org.enterprise.agent.wrb_02.v2
-started processing'}], 'role': 'agent', 'taskId': '92e552f3-386c-404c-9a4c-716b46876dcb'}], 'id':
-'92e552f3-386c-404c-9a4c-716b46876dcb', 'kind': 'task', 'status': {'message': {'contextId':
-'047d4156-0e8a-4216-90a5-547a78d11040', 'kind': 'message', 'messageId':
-'f92a9a46-8bec-416c-a2c5-6bad095f78c7', 'parts': [{'kind': 'text', 'text': 'org.enterprise.agent.wrb_02.v2
-started processing'}], 'role': 'agent', 'taskId': '92e552f3-386c-404c-9a4c-716b46876dcb'}, 'state':
-'working', 'timestamp': '2026-06-30T06:26:41.556531+00:00'}}}}
-╭────────────────────────────────────────────── 🧪 DEBUG META ──────────────────────────────────────────────╮
-│ {                                                                                                         │
-│   "a2a:task_id": "92e552f3-386c-404c-9a4c-716b46876dcb",                                                  │
-│   "a2a:context_id": "047d4156-0e8a-4216-90a5-547a78d11040",                                               │
-│   "a2a:request": {                                                                                        │
-│     "kind": "message",                                                                                    │
-│     "messageId": "613d5431-542b-4f19-b063-e1f92414937f",                                                  │
-│     "parts": [                                                                                            │
-│       {                                                                                                   │
-│         "kind": "text",                                                                                   │
-│         "text": "Analyze the following legacy JSP/Java code.STRICT RULES:1. Perform entity extraction2.   │
-│ Perform dependency analysis3. STOP after analysis4. DO NOT call summarize_findings yetReturn a JSON       │
-│ response with:- extracted classes- tables- APIs- dependency reportThen ask:- \"Do you want me to proceed  │
-│ to final summary?\"- \"Include RAG knowledge?\"- \"Refine analysis?\"Set:\"type\":                        │
-│ \"question\"\"interaction\": \"request_input\"Code:public class UserService {    public List<User>        │
-│ getUsers() {        String sql = \"SELECT * FROM USERS\";        return fetchUsers(sql);    }}public      │
-│ class OrderService {    public void getOrders() {        String sql = \"SELECT * FROM ORDERS\";           │
-│ }}fetch(\"http://order-api/getOrders\")"                                                                  │
-│       },                                                                                                  │
-│       {                                                                                                   │
-│         "kind": "text",                                                                                   │
-│         "text": "[META:TOOL_TOKENS] {\"type\": \"tool_credentials\", \"access_token\": \"dev-token\",     │
-│ \"refresh_token\": null}"                                                                                 │
-│       }                                                                                                   │
-│     ],                                                                                                    │
-│     "role": "user"                                                                                        │
-│   },                                                                                                      │
-│   "a2a:response": {                                                                                       │
-│     "contextId": "047d4156-0e8a-4216-90a5-547a78d11040",                                                  │
-│     "history": [                                                                                          │
-│       {                                                                                                   │
-│         "contextId": "047d4156-0e8a-4216-90a5-547a78d11040",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "f92a9a46-8bec-416c-a2c5-6bad095f78c7",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                   │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "92e552f3-386c-404c-9a4c-716b46876dcb"                                                  │
-│       }                                                                                                   │
-│     ],                                                                                                    │
-│     "id": "92e552f3-386c-404c-9a4c-716b46876dcb",                                                         │
-│     "kind": "task",                                                                                       │
-│     "status": {                                                                                           │
-│       "message": {                                                                                        │
-│         "contextId": "047d4156-0e8a-4216-90a5-547a78d11040",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "f92a9a46-8bec-416c-a2c5-6bad095f78c7",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                   │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "92e552f3-386c-404c-9a4c-716b46876dcb"                                                  │
-│       },                                                                                                  │
-│       "state": "working",                                                                                 │
-│       "timestamp": "2026-06-30T06:26:41.556531+00:00"                                                     │
-│     }                                                                                                     │
-│   }                                                                                                       │
-│ }                                                                                                         │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-RAW: {'type': 'agent_progress', 'agent': 'LegacyApplicationDiscoveryAgent', 'state': 'working', 'task_id':
-'92e552f3-386c-404c-9a4c-716b46876dcb'}
+• LegacyApplicationDiscoveryAgent → submitted
 🔄 LegacyApplicationDiscoveryAgent → working
-
-RAW: {'type': 'bot_message', 'content': 'org.enterprise.agent.wrb_02.v2 started processing', 'agent':
-'LegacyApplicationDiscoveryAgent'}
+🔄 LegacyApplicationDiscoveryAgent → working
 
 🤖 LegacyApplicationDiscoveryAgent
 org.enterprise.agent.wrb_02.v2 started processing
-
-RAW: {'type': 'debug_meta', 'meta': {'a2a:task_id': '92e552f3-386c-404c-9a4c-716b46876dcb', 'a2a:context_id':
-'047d4156-0e8a-4216-90a5-547a78d11040', 'a2a:request': {'kind': 'message', 'messageId':
-'613d5431-542b-4f19-b063-e1f92414937f', 'parts': [{'kind': 'text', 'text': 'Analyze the following legacy
-JSP/Java code.STRICT RULES:1. Perform entity extraction2. Perform dependency analysis3. STOP after analysis4.
-DO NOT call summarize_findings yetReturn a JSON response with:- extracted classes- tables- APIs- dependency
-reportThen ask:- "Do you want me to proceed to final summary?"- "Include RAG knowledge?"- "Refine
-analysis?"Set:"type": "question""interaction": "request_input"Code:public class UserService {    public
-List<User> getUsers() {        String sql = "SELECT * FROM USERS";        return fetchUsers(sql);    }}public
-class OrderService {    public void getOrders() {        String sql = "SELECT * FROM ORDERS";
-}}fetch("http://order-api/getOrders")'}, {'kind': 'text', 'text': '[META:TOOL_TOKENS] {"type":
-"tool_credentials", "access_token": "dev-token", "refresh_token": null}'}], 'role': 'user'}, 'a2a:response':
-{'contextId': '047d4156-0e8a-4216-90a5-547a78d11040', 'history': [{'contextId':
-'047d4156-0e8a-4216-90a5-547a78d11040', 'kind': 'message', 'messageId':
-'f92a9a46-8bec-416c-a2c5-6bad095f78c7', 'parts': [{'kind': 'text', 'text': 'org.enterprise.agent.wrb_02.v2
-started processing'}], 'role': 'agent', 'taskId': '92e552f3-386c-404c-9a4c-716b46876dcb'}, {'contextId':
-'047d4156-0e8a-4216-90a5-547a78d11040', 'kind': 'message', 'messageId':
-'555f0378-1ab7-4b5e-94b0-924772e178cd', 'parts': [{'kind': 'text', 'text': '{\n  "type": "question",\n
-"content": {\n    "extracted_classes": ["UserService", "OrderService"],\n    "tables": ["USERS", "ORDERS"],\n
-"APIs": ["http://order-api/getOrders"],\n    "dependency_report": "UserService depends on database table
-USERS. OrderService references database table ORDERS and invokes an external API at
-http://order-api/getOrders."\n  },\n  "questions": [\n    "Do you want me to proceed to final summary?",\n
-"Include RAG knowledge?",\n    "Refine analysis?"\n  ],\n  "interaction": "request_input"\n}'}], 'role':
-'agent', 'taskId': '92e552f3-386c-404c-9a4c-716b46876dcb'}], 'id': '92e552f3-386c-404c-9a4c-716b46876dcb',
-'kind': 'task', 'metadata': {'type': 'tool_event', 'phase': 'response', 'tool_name': 'analyze_dependencies',
-'tool_call_id': 'call_QT2kZkkZfoy4OfGckQJHFJGQ', 'data': 'UserService depends on DB tables: USERS,
-ORDERS\nOrderService depends on DB tables: USERS, ORDERS'}, 'status': {'message': {'contextId':
-'047d4156-0e8a-4216-90a5-547a78d11040', 'kind': 'message', 'messageId':
-'555f0378-1ab7-4b5e-94b0-924772e178cd', 'parts': [{'kind': 'text', 'text': '{\n  "type": "question",\n
-"content": {\n    "extracted_classes": ["UserService", "OrderService"],\n    "tables": ["USERS", "ORDERS"],\n
-"APIs": ["http://order-api/getOrders"],\n    "dependency_report": "UserService depends on database table
-USERS. OrderService references database table ORDERS and invokes an external API at
-http://order-api/getOrders."\n  },\n  "questions": [\n    "Do you want me to proceed to final summary?",\n
-"Include RAG knowledge?",\n    "Refine analysis?"\n  ],\n  "interaction": "request_input"\n}'}], 'role':
-'agent', 'taskId': '92e552f3-386c-404c-9a4c-716b46876dcb'}, 'state': 'working', 'timestamp':
-'2026-06-30T06:26:50.973579+00:00'}}}}
-╭────────────────────────────────────────────── 🧪 DEBUG META ──────────────────────────────────────────────╮
-│ {                                                                                                         │
-│   "a2a:task_id": "92e552f3-386c-404c-9a4c-716b46876dcb",                                                  │
-│   "a2a:context_id": "047d4156-0e8a-4216-90a5-547a78d11040",                                               │
-│   "a2a:request": {                                                                                        │
-│     "kind": "message",                                                                                    │
-│     "messageId": "613d5431-542b-4f19-b063-e1f92414937f",                                                  │
-│     "parts": [                                                                                            │
-│       {                                                                                                   │
-│         "kind": "text",                                                                                   │
-│         "text": "Analyze the following legacy JSP/Java code.STRICT RULES:1. Perform entity extraction2.   │
-│ Perform dependency analysis3. STOP after analysis4. DO NOT call summarize_findings yetReturn a JSON       │
-│ response with:- extracted classes- tables- APIs- dependency reportThen ask:- \"Do you want me to proceed  │
-│ to final summary?\"- \"Include RAG knowledge?\"- \"Refine analysis?\"Set:\"type\":                        │
-│ \"question\"\"interaction\": \"request_input\"Code:public class UserService {    public List<User>        │
-│ getUsers() {        String sql = \"SELECT * FROM USERS\";        return fetchUsers(sql);    }}public      │
-│ class OrderService {    public void getOrders() {        String sql = \"SELECT * FROM ORDERS\";           │
-│ }}fetch(\"http://order-api/getOrders\")"                                                                  │
-│       },                                                                                                  │
-│       {                                                                                                   │
-│         "kind": "text",                                                                                   │
-│         "text": "[META:TOOL_TOKENS] {\"type\": \"tool_credentials\", \"access_token\": \"dev-token\",     │
-│ \"refresh_token\": null}"                                                                                 │
-│       }                                                                                                   │
-│     ],                                                                                                    │
-│     "role": "user"                                                                                        │
-│   },                                                                                                      │
-│   "a2a:response": {                                                                                       │
-│     "contextId": "047d4156-0e8a-4216-90a5-547a78d11040",                                                  │
-│     "history": [                                                                                          │
-│       {                                                                                                   │
-│         "contextId": "047d4156-0e8a-4216-90a5-547a78d11040",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "f92a9a46-8bec-416c-a2c5-6bad095f78c7",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                   │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "92e552f3-386c-404c-9a4c-716b46876dcb"                                                  │
-│       },                                                                                                  │
-│       {                                                                                                   │
-│         "contextId": "047d4156-0e8a-4216-90a5-547a78d11040",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "555f0378-1ab7-4b5e-94b0-924772e178cd",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "{\n  \"type\": \"question\",\n  \"content\": {\n    \"extracted_classes\":           │
-│ [\"UserService\", \"OrderService\"],\n    \"tables\": [\"USERS\", \"ORDERS\"],\n    \"APIs\":             │
-│ [\"http://order-api/getOrders\"],\n    \"dependency_report\": \"UserService depends on database table     │
-│ USERS. OrderService references database table ORDERS and invokes an external API at                       │
-│ http://order-api/getOrders.\"\n  },\n  \"questions\": [\n    \"Do you want me to proceed to final         │
-│ summary?\",\n    \"Include RAG knowledge?\",\n    \"Refine analysis?\"\n  ],\n  \"interaction\":          │
-│ \"request_input\"\n}"                                                                                     │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "92e552f3-386c-404c-9a4c-716b46876dcb"                                                  │
-│       }                                                                                                   │
-│     ],                                                                                                    │
-│     "id": "92e552f3-386c-404c-9a4c-716b46876dcb",                                                         │
-│     "kind": "task",                                                                                       │
-│     "metadata": {                                                                                         │
-│       "type": "tool_event",                                                                               │
-│       "phase": "response",                                                                                │
-│       "tool_name": "analyze_dependencies",                                                                │
-│       "tool_call_id": "call_QT2kZkkZfoy4OfGckQJHFJGQ",                                                    │
-│       "data": "UserService depends on DB tables: USERS, ORDERS\nOrderService depends on DB tables: USERS, │
-│ ORDERS"                                                                                                   │
-│     },                                                                                                    │
-│     "status": {                                                                                           │
-│       "message": {                                                                                        │
-│         "contextId": "047d4156-0e8a-4216-90a5-547a78d11040",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "555f0378-1ab7-4b5e-94b0-924772e178cd",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "{\n  \"type\": \"question\",\n  \"content\": {\n    \"extracted_classes\":           │
-│ [\"UserService\", \"OrderService\"],\n    \"tables\": [\"USERS\", \"ORDERS\"],\n    \"APIs\":             │
-│ [\"http://order-api/getOrders\"],\n    \"dependency_report\": \"UserService depends on database table     │
-│ USERS. OrderService references database table ORDERS and invokes an external API at                       │
-│ http://order-api/getOrders.\"\n  },\n  \"questions\": [\n    \"Do you want me to proceed to final         │
-│ summary?\",\n    \"Include RAG knowledge?\",\n    \"Refine analysis?\"\n  ],\n  \"interaction\":          │
-│ \"request_input\"\n}"                                                                                     │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "92e552f3-386c-404c-9a4c-716b46876dcb"                                                  │
-│       },                                                                                                  │
-│       "state": "working",                                                                                 │
-│       "timestamp": "2026-06-30T06:26:50.973579+00:00"                                                     │
-│     }                                                                                                     │
-│   }                                                                                                       │
-│ }                                                                                                         │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-RAW: {'type': 'agent_progress', 'agent': 'LegacyApplicationDiscoveryAgent', 'state': 'working', 'task_id':
-'92e552f3-386c-404c-9a4c-716b46876dcb'}
 🔄 LegacyApplicationDiscoveryAgent → working
-
-RAW: {'type': 'tool_result', 'name': 'analyze_dependencies', 'response': 'UserService depends on DB tables:
-USERS, ORDERS\nOrderService depends on DB tables: USERS, ORDERS', 'agent': 'LegacyApplicationDiscoveryAgent'}
+🛠️ extract_entities  (agent: LegacyApplicationDiscoveryAgent)
+🔄 LegacyApplicationDiscoveryAgent → working
+🛠️ extract_entities  (agent: LegacyApplicationDiscoveryAgent)
+🔄 LegacyApplicationDiscoveryAgent → working
+✅ extract_entities
+{
+  "classes": [
+    "UserService",
+    "OrderService"
+  ],
+  "tables": [
+    "ORDERS"
+  ],
+  "apis": [
+    "http://order-api/getOrders"
+  ]
+}
+🔄 LegacyApplicationDiscoveryAgent → working
+✅ extract_entities
+{
+  "classes": [],
+  "tables": [],
+  "apis": [
+    "http://order-api/getOrders"
+  ]
+}
+🔄 LegacyApplicationDiscoveryAgent → working
+🛠️ analyze_dependencies  (agent: LegacyApplicationDiscoveryAgent)
+🔄 LegacyApplicationDiscoveryAgent → working
 ✅ analyze_dependencies
 UserService depends on DB tables: USERS, ORDERS
 OrderService depends on DB tables: USERS, ORDERS
-
-RAW: {'type': 'bot_message', 'content': '{\n  "type": "question",\n  "content": {\n    "extracted_classes":
-["UserService", "OrderService"],\n    "tables": ["USERS", "ORDERS"],\n    "APIs":
-["http://order-api/getOrders"],\n    "dependency_report": "UserService depends on database table USERS.
-OrderService references database table ORDERS and invokes an external API at http://order-api/getOrders."\n
-},\n  "questions": [\n    "Do you want me to proceed to final summary?",\n    "Include RAG knowledge?",\n
-"Refine analysis?"\n  ],\n  "interaction": "request_input"\n}', 'agent': 'LegacyApplicationDiscoveryAgent'}
+• LegacyApplicationDiscoveryAgent → input-required
 {
   "type": "question",
-  "content": {
-    "extracted_classes": [
-      "UserService",
-      "OrderService"
-    ],
-    "tables": [
-      "USERS",
-      "ORDERS"
-    ],
-    "APIs": [
-      "http://order-api/getOrders"
-    ],
-    "dependency_report": "UserService depends on database table USERS. OrderService references database table ORDERS and invokes an external API at http://order-api/getOrders."
-  },
+  "content": "Analysis results:\n- Extracted classes: UserService, OrderService\n- Detected tables: USERS, ORDERS\n- APIs: http://order-api/getOrders\n- Dependency relationships: UserService depends on USERS table, OrderService depends on ORDERS table and both mention these tables in SQL statements; API call to http://order-api/getOrders is present.\n\nDo you want me to include RAG knowledge for further context?\nShould I refine the dependency analysis?\nProceed to final summary?",
   "questions": [
-    "Do you want me to proceed to final summary?",
     "Include RAG knowledge?",
-    "Refine analysis?"
+    "Refine dependency analysis?",
+    "Proceed to final summary?"
   ],
   "interaction": "request_input"
 }
 
-RAW: {'type': 'done', 'ts': '2026-06-30T06:26:51.568660'}
-
 ----------------------------------------------------------------------
-You: yes process with final summary and redifne analysis
+You: do not include rag , just give me final summary
 
 Bot:
 
-RAW: {'type': 'status', 'stage': 'turn_started', 'agent': None}
-
-RAW: {'type': 'status', 'stage': 'tool_started', 'agent': 'LegacyApplicationDiscoveryAgent'}
-
 🚀 Starting agent: LegacyApplicationDiscoveryAgent
-
-RAW: {'type': 'tool_call', 'name': 'transfer_to_agent', 'args': {'agent_name':
-'LegacyApplicationDiscoveryAgent'}, 'agent': 'LegacyApplicationDiscoveryAgent'}
 🛠️ transfer_to_agent  (agent: LegacyApplicationDiscoveryAgent)
 🔄 Switching → LegacyApplicationDiscoveryAgent
-
-RAW: {'type': 'tool_result', 'name': 'transfer_to_agent', 'response': {'result': None}, 'agent':
-'LegacyApplicationDiscoveryAgent'}
 ✅ transfer_to_agent
 {
   "result": null
 }
-
-RAW: {'type': 'debug_meta', 'meta': {'a2a:task_id': '00d3a1aa-58e1-457c-8d38-ce8984668e18', 'a2a:context_id':
-'2e3e7199-626c-423f-a1f0-89452e699d70', 'a2a:request': {'kind': 'message', 'messageId':
-'593a0e7a-7964-44da-9136-4aa12bba6ac5', 'parts': [{'kind': 'text', 'text': 'yes process with final summary
-and redifne analysis'}, {'kind': 'text', 'text': '[META:TOOL_TOKENS] {"type": "tool_credentials",
-"access_token": "dev-token", "refresh_token": null}'}], 'role': 'user'}, 'a2a:response': {'contextId':
-'2e3e7199-626c-423f-a1f0-89452e699d70', 'history': [{'contextId': '2e3e7199-626c-423f-a1f0-89452e699d70',
-'kind': 'message', 'messageId': 'd041a40d-31e9-4646-93ab-79455bdb5843', 'parts': [{'kind': 'text', 'text':
-'org.enterprise.agent.wrb_02.v2 started processing'}], 'role': 'agent', 'taskId':
-'00d3a1aa-58e1-457c-8d38-ce8984668e18'}], 'id': '00d3a1aa-58e1-457c-8d38-ce8984668e18', 'kind': 'task',
-'status': {'message': {'contextId': '2e3e7199-626c-423f-a1f0-89452e699d70', 'kind': 'message', 'messageId':
-'d041a40d-31e9-4646-93ab-79455bdb5843', 'parts': [{'kind': 'text', 'text': 'org.enterprise.agent.wrb_02.v2
-started processing'}], 'role': 'agent', 'taskId': '00d3a1aa-58e1-457c-8d38-ce8984668e18'}, 'state':
-'working', 'timestamp': '2026-06-30T06:27:39.847180+00:00'}}}}
-╭────────────────────────────────────────────── 🧪 DEBUG META ──────────────────────────────────────────────╮
-│ {                                                                                                         │
-│   "a2a:task_id": "00d3a1aa-58e1-457c-8d38-ce8984668e18",                                                  │
-│   "a2a:context_id": "2e3e7199-626c-423f-a1f0-89452e699d70",                                               │
-│   "a2a:request": {                                                                                        │
-│     "kind": "message",                                                                                    │
-│     "messageId": "593a0e7a-7964-44da-9136-4aa12bba6ac5",                                                  │
-│     "parts": [                                                                                            │
-│       {                                                                                                   │
-│         "kind": "text",                                                                                   │
-│         "text": "yes process with final summary and redifne analysis"                                     │
-│       },                                                                                                  │
-│       {                                                                                                   │
-│         "kind": "text",                                                                                   │
-│         "text": "[META:TOOL_TOKENS] {\"type\": \"tool_credentials\", \"access_token\": \"dev-token\",     │
-│ \"refresh_token\": null}"                                                                                 │
-│       }                                                                                                   │
-│     ],                                                                                                    │
-│     "role": "user"                                                                                        │
-│   },                                                                                                      │
-│   "a2a:response": {                                                                                       │
-│     "contextId": "2e3e7199-626c-423f-a1f0-89452e699d70",                                                  │
-│     "history": [                                                                                          │
-│       {                                                                                                   │
-│         "contextId": "2e3e7199-626c-423f-a1f0-89452e699d70",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "d041a40d-31e9-4646-93ab-79455bdb5843",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                   │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "00d3a1aa-58e1-457c-8d38-ce8984668e18"                                                  │
-│       }                                                                                                   │
-│     ],                                                                                                    │
-│     "id": "00d3a1aa-58e1-457c-8d38-ce8984668e18",                                                         │
-│     "kind": "task",                                                                                       │
-│     "status": {                                                                                           │
-│       "message": {                                                                                        │
-│         "contextId": "2e3e7199-626c-423f-a1f0-89452e699d70",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "d041a40d-31e9-4646-93ab-79455bdb5843",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                   │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "00d3a1aa-58e1-457c-8d38-ce8984668e18"                                                  │
-│       },                                                                                                  │
-│       "state": "working",                                                                                 │
-│       "timestamp": "2026-06-30T06:27:39.847180+00:00"                                                     │
-│     }                                                                                                     │
-│   }                                                                                                       │
-│ }                                                                                                         │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-RAW: {'type': 'agent_progress', 'agent': 'LegacyApplicationDiscoveryAgent', 'state': 'working', 'task_id':
-'00d3a1aa-58e1-457c-8d38-ce8984668e18'}
 🔄 LegacyApplicationDiscoveryAgent → working
-
-RAW: {'type': 'bot_message', 'content': 'org.enterprise.agent.wrb_02.v2 started processing', 'agent':
-'LegacyApplicationDiscoveryAgent'}
+🔄 LegacyApplicationDiscoveryAgent → working
 
 🤖 LegacyApplicationDiscoveryAgent
 org.enterprise.agent.wrb_02.v2 started processing
-
-RAW: {'type': 'debug_meta', 'meta': {'a2a:task_id': '00d3a1aa-58e1-457c-8d38-ce8984668e18', 'a2a:context_id':
-'2e3e7199-626c-423f-a1f0-89452e699d70', 'a2a:request': {'kind': 'message', 'messageId':
-'593a0e7a-7964-44da-9136-4aa12bba6ac5', 'parts': [{'kind': 'text', 'text': 'yes process with final summary
-and redifne analysis'}, {'kind': 'text', 'text': '[META:TOOL_TOKENS] {"type": "tool_credentials",
-"access_token": "dev-token", "refresh_token": null}'}], 'role': 'user'}, 'a2a:response': {'contextId':
-'2e3e7199-626c-423f-a1f0-89452e699d70', 'history': [{'contextId': '2e3e7199-626c-423f-a1f0-89452e699d70',
-'kind': 'message', 'messageId': 'd041a40d-31e9-4646-93ab-79455bdb5843', 'parts': [{'kind': 'text', 'text':
-'org.enterprise.agent.wrb_02.v2 started processing'}], 'role': 'agent', 'taskId':
-'00d3a1aa-58e1-457c-8d38-ce8984668e18'}, {'contextId': '2e3e7199-626c-423f-a1f0-89452e699d70', 'kind':
-'message', 'messageId': '6bb07654-d9e1-43bd-8036-45e2d55f2715', 'parts': [{'kind': 'text', 'text': "The
-analysis of the legacy JSP system reveals a UserDAO class that directly interacts with a MySQL database by
-querying the 'users' table. There are no external APIs involved. The dependency structure indicates tight
-coupling between the database and the application logic. It is recommended to introduce a service abstraction
-layer to decouple business logic from data access before proceeding with modernization efforts."}], 'role':
-'agent', 'taskId': '00d3a1aa-58e1-457c-8d38-ce8984668e18'}], 'id': '00d3a1aa-58e1-457c-8d38-ce8984668e18',
-'kind': 'task', 'metadata': {'type': 'tool_event', 'phase': 'response', 'tool_name': 'summarize_findings',
-'tool_call_id': 'call_XftexF5XDdNPCnWgzFpc2ekg', 'data': "\n=== Dependency Report ===\nThe legacy JSP
-application includes a UserDAO class that interacts with a MySQL database. The UserDAO class performs SQL
-queries on the 'users' table to retrieve user data. There are no external APIs detected in this code snippet.
-The dependency graph shows the UserDAO class is directly dependent on the 'users' table in the
-database.\n\n=== Supporting Knowledge (RAG) ===\n\n\n=== Final Insight ===\nThis legacy system shows tight
-coupling between business logic and database layers.\nRecommended: Introduce service abstraction layer before
-modernization.\n"}, 'status': {'message': {'contextId': '2e3e7199-626c-423f-a1f0-89452e699d70', 'kind':
-'message', 'messageId': '6bb07654-d9e1-43bd-8036-45e2d55f2715', 'parts': [{'kind': 'text', 'text': "The
-analysis of the legacy JSP system reveals a UserDAO class that directly interacts with a MySQL database by
-querying the 'users' table. There are no external APIs involved. The dependency structure indicates tight
-coupling between the database and the application logic. It is recommended to introduce a service abstraction
-layer to decouple business logic from data access before proceeding with modernization efforts."}], 'role':
-'agent', 'taskId': '00d3a1aa-58e1-457c-8d38-ce8984668e18'}, 'state': 'working', 'timestamp':
-'2026-06-30T06:27:58.649065+00:00'}}}}
-╭────────────────────────────────────────────── 🧪 DEBUG META ──────────────────────────────────────────────╮
-│ {                                                                                                         │
-│   "a2a:task_id": "00d3a1aa-58e1-457c-8d38-ce8984668e18",                                                  │
-│   "a2a:context_id": "2e3e7199-626c-423f-a1f0-89452e699d70",                                               │
-│   "a2a:request": {                                                                                        │
-│     "kind": "message",                                                                                    │
-│     "messageId": "593a0e7a-7964-44da-9136-4aa12bba6ac5",                                                  │
-│     "parts": [                                                                                            │
-│       {                                                                                                   │
-│         "kind": "text",                                                                                   │
-│         "text": "yes process with final summary and redifne analysis"                                     │
-│       },                                                                                                  │
-│       {                                                                                                   │
-│         "kind": "text",                                                                                   │
-│         "text": "[META:TOOL_TOKENS] {\"type\": \"tool_credentials\", \"access_token\": \"dev-token\",     │
-│ \"refresh_token\": null}"                                                                                 │
-│       }                                                                                                   │
-│     ],                                                                                                    │
-│     "role": "user"                                                                                        │
-│   },                                                                                                      │
-│   "a2a:response": {                                                                                       │
-│     "contextId": "2e3e7199-626c-423f-a1f0-89452e699d70",                                                  │
-│     "history": [                                                                                          │
-│       {                                                                                                   │
-│         "contextId": "2e3e7199-626c-423f-a1f0-89452e699d70",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "d041a40d-31e9-4646-93ab-79455bdb5843",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                   │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "00d3a1aa-58e1-457c-8d38-ce8984668e18"                                                  │
-│       },                                                                                                  │
-│       {                                                                                                   │
-│         "contextId": "2e3e7199-626c-423f-a1f0-89452e699d70",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "6bb07654-d9e1-43bd-8036-45e2d55f2715",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "The analysis of the legacy JSP system reveals a UserDAO class that directly          │
-│ interacts with a MySQL database by querying the 'users' table. There are no external APIs involved. The   │
-│ dependency structure indicates tight coupling between the database and the application logic. It is       │
-│ recommended to introduce a service abstraction layer to decouple business logic from data access before   │
-│ proceeding with modernization efforts."                                                                   │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "00d3a1aa-58e1-457c-8d38-ce8984668e18"                                                  │
-│       }                                                                                                   │
-│     ],                                                                                                    │
-│     "id": "00d3a1aa-58e1-457c-8d38-ce8984668e18",                                                         │
-│     "kind": "task",                                                                                       │
-│     "metadata": {                                                                                         │
-│       "type": "tool_event",                                                                               │
-│       "phase": "response",                                                                                │
-│       "tool_name": "summarize_findings",                                                                  │
-│       "tool_call_id": "call_XftexF5XDdNPCnWgzFpc2ekg",                                                    │
-│       "data": "\n=== Dependency Report ===\nThe legacy JSP application includes a UserDAO class that      │
-│ interacts with a MySQL database. The UserDAO class performs SQL queries on the 'users' table to retrieve  │
-│ user data. There are no external APIs detected in this code snippet. The dependency graph shows the       │
-│ UserDAO class is directly dependent on the 'users' table in the database.\n\n=== Supporting Knowledge     │
-│ (RAG) ===\n\n\n=== Final Insight ===\nThis legacy system shows tight coupling between business logic and  │
-│ database layers.\nRecommended: Introduce service abstraction layer before modernization.\n"               │
-│     },                                                                                                    │
-│     "status": {                                                                                           │
-│       "message": {                                                                                        │
-│         "contextId": "2e3e7199-626c-423f-a1f0-89452e699d70",                                              │
-│         "kind": "message",                                                                                │
-│         "messageId": "6bb07654-d9e1-43bd-8036-45e2d55f2715",                                              │
-│         "parts": [                                                                                        │
-│           {                                                                                               │
-│             "kind": "text",                                                                               │
-│             "text": "The analysis of the legacy JSP system reveals a UserDAO class that directly          │
-│ interacts with a MySQL database by querying the 'users' table. There are no external APIs involved. The   │
-│ dependency structure indicates tight coupling between the database and the application logic. It is       │
-│ recommended to introduce a service abstraction layer to decouple business logic from data access before   │
-│ proceeding with modernization efforts."                                                                   │
-│           }                                                                                               │
-│         ],                                                                                                │
-│         "role": "agent",                                                                                  │
-│         "taskId": "00d3a1aa-58e1-457c-8d38-ce8984668e18"                                                  │
-│       },                                                                                                  │
-│       "state": "working",                                                                                 │
-│       "timestamp": "2026-06-30T06:27:58.649065+00:00"                                                     │
-│     }                                                                                                     │
-│   }                                                                                                       │
-│ }                                                                                                         │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-RAW: {'type': 'agent_progress', 'agent': 'LegacyApplicationDiscoveryAgent', 'state': 'working', 'task_id':
-'00d3a1aa-58e1-457c-8d38-ce8984668e18'}
 🔄 LegacyApplicationDiscoveryAgent → working
-
-RAW: {'type': 'tool_result', 'name': 'summarize_findings', 'response': "\n=== Dependency Report ===\nThe
-legacy JSP application includes a UserDAO class that interacts with a MySQL database. The UserDAO class
-performs SQL queries on the 'users' table to retrieve user data. There are no external APIs detected in this
-code snippet. The dependency graph shows the UserDAO class is directly dependent on the 'users' table in the
-database.\n\n=== Supporting Knowledge (RAG) ===\n\n\n=== Final Insight ===\nThis legacy system shows tight
-coupling between business logic and database layers.\nRecommended: Introduce service abstraction layer before
-modernization.\n", 'agent': 'LegacyApplicationDiscoveryAgent'}
+🛠️ summarize_findings  (agent: LegacyApplicationDiscoveryAgent)
+🔄 LegacyApplicationDiscoveryAgent → working
 ✅ summarize_findings
 
 === Dependency Report ===
-The legacy JSP application includes a UserDAO class that interacts with a MySQL database. The UserDAO class
-performs SQL queries on the 'users' table to retrieve user data. There are no external APIs detected in this
-code snippet. The dependency graph shows the UserDAO class is directly dependent on the 'users' table in the
-database.
+UserService depends on the USERS table for fetching user data. OrderService depends on the ORDERS table to retrieve order data. The legacy system
+interfaces with an external API at http://order-api/getOrders for order retrieval. These dependencies indicate a clear separation between user and
+order data management, with database tables accessed directly by the respective service classes, and orders also accessed via an external API.
 
 === Supporting Knowledge (RAG) ===
 
@@ -1672,242 +1291,34 @@ database.
 This legacy system shows tight coupling between business logic and database layers.
 Recommended: Introduce service abstraction layer before modernization.
 
+🔄 LegacyApplicationDiscoveryAgent → working
+Final summary:
+The legacy JSP/Java system consists of two main service classes: UserService and OrderService. UserService directly accesses the USERS database
+table to fetch user information, while OrderService accesses the ORDERS table. Additionally, OrderService interacts with an external API at
+http://order-api/getOrders to retrieve order data.
 
-RAW: {'type': 'bot_message', 'content': "The analysis of the legacy JSP system reveals a UserDAO class that
-directly interacts with a MySQL database by querying the 'users' table. There are no external APIs involved.
-The dependency structure indicates tight coupling between the database and the application logic. It is
-recommended to introduce a service abstraction layer to decouple business logic from data access before
-proceeding with modernization efforts.", 'agent': 'LegacyApplicationDiscoveryAgent'}
-The analysis of the legacy JSP system reveals a UserDAO class that directly interacts with a MySQL database
-by querying the 'users' table. There are no external APIs involved. The dependency structure indicates tight
-coupling between the database and the application logic. It is recommended to introduce a service abstraction
-layer to decouple business logic from data access before proceeding with modernization efforts.
-
-RAW: {'type': 'done', 'ts': '2026-06-30T06:27:59.180409'}
-
-----------------------------------------------------------------------
-You: thanks
-
-Bot:
-
-RAW: {'type': 'status', 'stage': 'turn_started', 'agent': None}
-
-RAW: {'type': 'bot_message', 'content': "Please reply with 'yes' or 'no'.", 'agent': 'Cortex'}
-
-🤖 Cortex
-Please reply with 'yes' or 'no'.
-
-RAW: {'type': 'done', 'ts': '2026-06-30T06:30:12.306101'}
-
-----------------------------------------------------------------------
-You: yes
-
-Bot:
-
-RAW: {'type': 'status', 'stage': 'turn_started', 'agent': None}
-
-RAW: {'type': 'status', 'stage': 'tool_started', 'agent': 'LegacyApplicationDiscoveryAgent'}
-
-🚀 Starting agent: LegacyApplicationDiscoveryAgent
-
-RAW: {'type': 'tool_call', 'name': 'transfer_to_agent', 'args': {'agent_name': 'LegacyApplicationDiscoveryAgent'}, 'agent':
-'LegacyApplicationDiscoveryAgent'}
-🛠️ transfer_to_agent  (agent: LegacyApplicationDiscoveryAgent)
-🔄 Switching → LegacyApplicationDiscoveryAgent
-
-RAW: {'type': 'tool_result', 'name': 'transfer_to_agent', 'response': {'result': None}, 'agent': 'LegacyApplicationDiscoveryAgent'}
-✅ transfer_to_agent
-{
-  "result": null
-}
-
-RAW: {'type': 'debug_meta', 'meta': {'a2a:task_id': '145d0a44-6bfe-4d7f-8eb5-657a28865a52', 'a2a:context_id':
-'6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'a2a:request': {'kind': 'message', 'messageId': '978c8d14-ebdc-4454-a213-2ae0fd6990a6', 'parts': [{'kind':
-'text', 'text': 'thanks'}, {'kind': 'text', 'text': '[META:TOOL_TOKENS] {"type": "tool_credentials", "access_token": "dev-token", "refresh_token":
-null}'}], 'role': 'user'}, 'a2a:response': {'contextId': '6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'history': [{'contextId':
-'6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'kind': 'message', 'messageId': '87b418af-fadc-41e0-892a-2711f7da56dc', 'parts': [{'kind': 'text', 'text':
-'org.enterprise.agent.wrb_02.v2 started processing'}], 'role': 'agent', 'taskId': '145d0a44-6bfe-4d7f-8eb5-657a28865a52'}], 'id':
-'145d0a44-6bfe-4d7f-8eb5-657a28865a52', 'kind': 'task', 'status': {'message': {'contextId': '6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'kind':
-'message', 'messageId': '87b418af-fadc-41e0-892a-2711f7da56dc', 'parts': [{'kind': 'text', 'text': 'org.enterprise.agent.wrb_02.v2 started
-processing'}], 'role': 'agent', 'taskId': '145d0a44-6bfe-4d7f-8eb5-657a28865a52'}, 'state': 'working', 'timestamp':
-'2026-06-30T06:30:22.609201+00:00'}}}}
-╭───────────────────────────────────────────────────────── 🧪 DEBUG META ─────────────────────────────────────────────────────────╮
-│ {                                                                                                                               │
-│   "a2a:task_id": "145d0a44-6bfe-4d7f-8eb5-657a28865a52",                                                                        │
-│   "a2a:context_id": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                     │
-│   "a2a:request": {                                                                                                              │
-│     "kind": "message",                                                                                                          │
-│     "messageId": "978c8d14-ebdc-4454-a213-2ae0fd6990a6",                                                                        │
-│     "parts": [                                                                                                                  │
-│       {                                                                                                                         │
-│         "kind": "text",                                                                                                         │
-│         "text": "thanks"                                                                                                        │
-│       },                                                                                                                        │
-│       {                                                                                                                         │
-│         "kind": "text",                                                                                                         │
-│         "text": "[META:TOOL_TOKENS] {\"type\": \"tool_credentials\", \"access_token\": \"dev-token\", \"refresh_token\": null}" │
-│       }                                                                                                                         │
-│     ],                                                                                                                          │
-│     "role": "user"                                                                                                              │
-│   },                                                                                                                            │
-│   "a2a:response": {                                                                                                             │
-│     "contextId": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                        │
-│     "history": [                                                                                                                │
-│       {                                                                                                                         │
-│         "contextId": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                    │
-│         "kind": "message",                                                                                                      │
-│         "messageId": "87b418af-fadc-41e0-892a-2711f7da56dc",                                                                    │
-│         "parts": [                                                                                                              │
-│           {                                                                                                                     │
-│             "kind": "text",                                                                                                     │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                                         │
-│           }                                                                                                                     │
-│         ],                                                                                                                      │
-│         "role": "agent",                                                                                                        │
-│         "taskId": "145d0a44-6bfe-4d7f-8eb5-657a28865a52"                                                                        │
-│       }                                                                                                                         │
-│     ],                                                                                                                          │
-│     "id": "145d0a44-6bfe-4d7f-8eb5-657a28865a52",                                                                               │
-│     "kind": "task",                                                                                                             │
-│     "status": {                                                                                                                 │
-│       "message": {                                                                                                              │
-│         "contextId": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                    │
-│         "kind": "message",                                                                                                      │
-│         "messageId": "87b418af-fadc-41e0-892a-2711f7da56dc",                                                                    │
-│         "parts": [                                                                                                              │
-│           {                                                                                                                     │
-│             "kind": "text",                                                                                                     │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                                         │
-│           }                                                                                                                     │
-│         ],                                                                                                                      │
-│         "role": "agent",                                                                                                        │
-│         "taskId": "145d0a44-6bfe-4d7f-8eb5-657a28865a52"                                                                        │
-│       },                                                                                                                        │
-│       "state": "working",                                                                                                       │
-│       "timestamp": "2026-06-30T06:30:22.609201+00:00"                                                                           │
-│     }                                                                                                                           │
-│   }                                                                                                                             │
-│ }                                                                                                                               │
-╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-RAW: {'type': 'agent_progress', 'agent': 'LegacyApplicationDiscoveryAgent', 'state': 'working', 'task_id': '145d0a44-6bfe-4d7f-8eb5-657a28865a52'}
+This structure reveals a clear division between user and order management with dependencies on respective database tables and external API for
+orders. The current architecture shows tight coupling between the business logic and data access layers, indicating the need for introducing a
+service abstraction layer to facilitate modernization efforts.
 🔄 LegacyApplicationDiscoveryAgent → working
 
-RAW: {'type': 'bot_message', 'content': 'org.enterprise.agent.wrb_02.v2 started processing', 'agent': 'LegacyApplicationDiscoveryAgent'}
+💰 Token Usage
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┓
+┃ Agent                           ┃ Input ┃ Output ┃ Total ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━┩
+│ LegacyApplicationDiscoveryAgent │ 2516  │ 247    │ 2763  │
+└─────────────────────────────────┴───────┴────────┴───────┘
+✅ LegacyApplicationDiscoveryAgent → completed
 
-🤖 LegacyApplicationDiscoveryAgent
-org.enterprise.agent.wrb_02.v2 started processing
-
-RAW: {'type': 'debug_meta', 'meta': {'a2a:task_id': '145d0a44-6bfe-4d7f-8eb5-657a28865a52', 'a2a:context_id':
-'6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'a2a:request': {'kind': 'message', 'messageId': '978c8d14-ebdc-4454-a213-2ae0fd6990a6', 'parts': [{'kind':
-'text', 'text': 'thanks'}, {'kind': 'text', 'text': '[META:TOOL_TOKENS] {"type": "tool_credentials", "access_token": "dev-token", "refresh_token":
-null}'}], 'role': 'user'}, 'a2a:response': {'contextId': '6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'history': [{'contextId':
-'6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'kind': 'message', 'messageId': '87b418af-fadc-41e0-892a-2711f7da56dc', 'parts': [{'kind': 'text', 'text':
-'org.enterprise.agent.wrb_02.v2 started processing'}], 'role': 'agent', 'taskId': '145d0a44-6bfe-4d7f-8eb5-657a28865a52'}, {'contextId':
-'6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'kind': 'message', 'messageId': '8e8cdad1-d09c-4a5c-8994-6dee0f48d90a', 'parts': [{'kind': 'text', 'text':
-"You're welcome! If you have any JSP or Java legacy code you'd like me to analyze or if you have further questions, feel free to share."}], 'role':
-'agent', 'taskId': '145d0a44-6bfe-4d7f-8eb5-657a28865a52'}], 'id': '145d0a44-6bfe-4d7f-8eb5-657a28865a52', 'kind': 'task', 'status': {'message':
-{'contextId': '6bdc5cba-a80a-44c3-8b42-f661bdd4b362', 'kind': 'message', 'messageId': '8e8cdad1-d09c-4a5c-8994-6dee0f48d90a', 'parts': [{'kind':
-'text', 'text': "You're welcome! If you have any JSP or Java legacy code you'd like me to analyze or if you have further questions, feel free to
-share."}], 'role': 'agent', 'taskId': '145d0a44-6bfe-4d7f-8eb5-657a28865a52'}, 'state': 'working', 'timestamp':
-'2026-06-30T06:30:25.331739+00:00'}}}}
-╭───────────────────────────────────────────────────────────────── 🧪 DEBUG META ──────────────────────────────────────────────────────────────────╮
-│ {                                                                                                                                                │
-│   "a2a:task_id": "145d0a44-6bfe-4d7f-8eb5-657a28865a52",                                                                                         │
-│   "a2a:context_id": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                                      │
-│   "a2a:request": {                                                                                                                               │
-│     "kind": "message",                                                                                                                           │
-│     "messageId": "978c8d14-ebdc-4454-a213-2ae0fd6990a6",                                                                                         │
-│     "parts": [                                                                                                                                   │
-│       {                                                                                                                                          │
-│         "kind": "text",                                                                                                                          │
-│         "text": "thanks"                                                                                                                         │
-│       },                                                                                                                                         │
-│       {                                                                                                                                          │
-│         "kind": "text",                                                                                                                          │
-│         "text": "[META:TOOL_TOKENS] {\"type\": \"tool_credentials\", \"access_token\": \"dev-token\", \"refresh_token\": null}"                  │
-│       }                                                                                                                                          │
-│     ],                                                                                                                                           │
-│     "role": "user"                                                                                                                               │
-│   },                                                                                                                                             │
-│   "a2a:response": {                                                                                                                              │
-│     "contextId": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                                         │
-│     "history": [                                                                                                                                 │
-│       {                                                                                                                                          │
-│         "contextId": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                                     │
-│         "kind": "message",                                                                                                                       │
-│         "messageId": "87b418af-fadc-41e0-892a-2711f7da56dc",                                                                                     │
-│         "parts": [                                                                                                                               │
-│           {                                                                                                                                      │
-│             "kind": "text",                                                                                                                      │
-│             "text": "org.enterprise.agent.wrb_02.v2 started processing"                                                                          │
-│           }                                                                                                                                      │
-│         ],                                                                                                                                       │
-│         "role": "agent",                                                                                                                         │
-│         "taskId": "145d0a44-6bfe-4d7f-8eb5-657a28865a52"                                                                                         │
-│       },                                                                                                                                         │
-│       {                                                                                                                                          │
-│         "contextId": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                                     │
-│         "kind": "message",                                                                                                                       │
-│         "messageId": "8e8cdad1-d09c-4a5c-8994-6dee0f48d90a",                                                                                     │
-│         "parts": [                                                                                                                               │
-│           {                                                                                                                                      │
-│             "kind": "text",                                                                                                                      │
-│             "text": "You're welcome! If you have any JSP or Java legacy code you'd like me to analyze or if you have further questions, feel     │
-│ free to share."                                                                                                                                  │
-│           }                                                                                                                                      │
-│         ],                                                                                                                                       │
-│         "role": "agent",                                                                                                                         │
-│         "taskId": "145d0a44-6bfe-4d7f-8eb5-657a28865a52"                                                                                         │
-│       }                                                                                                                                          │
-│     ],                                                                                                                                           │
-│     "id": "145d0a44-6bfe-4d7f-8eb5-657a28865a52",                                                                                                │
-│     "kind": "task",                                                                                                                              │
-│     "status": {                                                                                                                                  │
-│       "message": {                                                                                                                               │
-│         "contextId": "6bdc5cba-a80a-44c3-8b42-f661bdd4b362",                                                                                     │
-│         "kind": "message",                                                                                                                       │
-│         "messageId": "8e8cdad1-d09c-4a5c-8994-6dee0f48d90a",                                                                                     │
-│         "parts": [                                                                                                                               │
-│           {                                                                                                                                      │
-│             "kind": "text",                                                                                                                      │
-│             "text": "You're welcome! If you have any JSP or Java legacy code you'd like me to analyze or if you have further questions, feel     │
-│ free to share."                                                                                                                                  │
-│           }                                                                                                                                      │
-│         ],                                                                                                                                       │
-│         "role": "agent",                                                                                                                         │
-│         "taskId": "145d0a44-6bfe-4d7f-8eb5-657a28865a52"                                                                                         │
-│       },                                                                                                                                         │
-│       "state": "working",                                                                                                                        │
-│       "timestamp": "2026-06-30T06:30:25.331739+00:00"                                                                                            │
-│     }                                                                                                                                            │
-│   }                                                                                                                                              │
-│ }                                                                                                                                                │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-RAW: {'type': 'agent_progress', 'agent': 'LegacyApplicationDiscoveryAgent', 'state': 'working', 'task_id': '145d0a44-6bfe-4d7f-8eb5-657a28865a52'}
-🔄 LegacyApplicationDiscoveryAgent → working
-
-RAW: {'type': 'bot_message', 'content': "You're welcome! If you have any JSP or Java legacy code you'd like me to analyze or if you have further
-questions, feel free to share.", 'agent': 'LegacyApplicationDiscoveryAgent'}
-You're welcome! If you have any JSP or Java legacy code you'd like me to analyze or if you have further questions, feel free to share.
-
-RAW: {'type': 'done', 'ts': '2026-06-30T06:30:25.868344'}
-
-----------------------------------------------------------------------
-You: ok
-
-Bot:
-
-RAW: {'type': 'status', 'stage': 'turn_started', 'agent': None}
-
-RAW: {'type': 'bot_message', 'content': 'If you have any more questions or need further assistance, feel free to ask!', 'agent': 'Cortex'}
-
-🤖 Cortex
-If you have any more questions or need further assistance, feel free to ask!
-
-RAW: {'type': 'done', 'ts': '2026-06-30T06:30:39.715483'}
+💰 Token Usage
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┓
+┃ Agent                           ┃ Input ┃ Output ┃ Total ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━┩
+│ LegacyApplicationDiscoveryAgent │ 5032  │ 494    │ 5526  │
+└─────────────────────────────────┴───────┴────────┴───────┘
 
 ----------------------------------------------------------------------
 You:
+
+
 ```

@@ -355,7 +355,6 @@ class ChatMessage(Base):
         index=True,
     )
 
-
 Index(
     "ix_chat_messages_session_created",
     ChatMessage.session_id,

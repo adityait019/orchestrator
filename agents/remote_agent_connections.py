@@ -1,52 +1,57 @@
-
 # agents/remote_agent_connections.py
 
-import logging
-from urllib.parse import urlparse
+from __future__ import annotations
 
-from google.adk.agents.remote_a2a_agent import RemoteA2aAgent, A2A_METADATA_PREFIX
-import httpx
-import asyncio
-from typing import Dict , List,Any,Optional
-from a2a.client import A2AClient
-from a2a.types import Message as A2AMessage, Role
+import logging
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
+from pydantic import PrivateAttr
+
+from google.adk.agents import BaseAgent
 from google.adk.events.event import Event
 from google.genai import types as genai_types
-from google.genai.types import Part
-from utils.agent_card_extractor import extract_description_capabilities_skills
-from google.adk.a2a.logs.log_utils import build_a2a_request_log
 
-from a2a.client.card_resolver import A2ACardResolver
-from pydantic import PrivateAttr
-import json
-import re
+from services.a2a_runtime.adapter import A2AAgentAdapter
+from services.a2a_runtime.client_manager import A2AClientManager
 
-META_TOKEN_RE = re.compile(r"^\[META:TOKEN_USAGE\]\s*(\{.*\})\s*$")
 logger = logging.getLogger(__name__)
 
-
-
+A2A_METADATA_PREFIX = "a2a:"
 
 
 class RemoteAgentInfo:
-    def __init__(self,name,description,endpoint,capabilities=None,skills=None):
-        self.name=name
-        self.description=description
-        self.endpoint=endpoint
-        self.capabilities=capabilities or []
-        self.skills=skills or []
+    def __init__(
+        self,
+        name,
+        description,
+        endpoint,
+        capabilities=None,
+        skills=None,
+    ):
+        self.name = name
+        self.description = description
+        self.endpoint = endpoint
+        self.capabilities = capabilities or []
+        self.skills = skills or []
 
 
-
-class RemoteServerManager(RemoteA2aAgent):
+class RemoteServerManager(BaseAgent):
     """
-    Remote A2A agent that:
-      - Sends ONLY the last user event to the remote agent (prevents token bleed).
-      - Preserves remote server state via context_id when available.
-      - Logs a concise summary of outbound parts for debugging.
-      - On response: extracts file parts into event.custom_metadata["ui_files"],
-        and keeps ONLY text parts in the content (drops function/tool/images/etc.).
+    ADK-compatible shim around a pure a2a-sdk adapter.
+
+    This class intentionally does NOT inherit from:
+        google.adk.agents.remote_a2a_agent.RemoteA2aAgent
+
+    It allows the rest of your current system to keep using:
+        root_agent.sub_agents
+        transfer_to_agent()
+
+    But A2A task/session state is now controlled by your own code.
     """
+
+    _agent_card_url: str = PrivateAttr()
+    _client_manager: A2AClientManager = PrivateAttr()
+    _adapter: A2AAgentAdapter = PrivateAttr()
 
     _capabilities: List[str] = PrivateAttr(default_factory=list)
     _skills: List[str] = PrivateAttr(default_factory=list)
@@ -56,27 +61,48 @@ class RemoteServerManager(RemoteA2aAgent):
 
     def __init__(
         self,
-        *args,
-        filter_orchestration_noise: bool = True,
-        text_preview_len: int = 160,
-        max_text_previews: int = 6,
-        **kwargs,
+        *,
+        name: str,
+        agent_card: str | None = None,
+        agent_card_url: str | None = None,
+        description: str = "",
+        a2a_client_factory: Any | None = None,
+        httpx_client: Any | None = None,
+        timeout: float = 600.0,
+        **kwargs: Any,
     ):
-        """
-        Args:
-          filter_orchestration_noise: If True, drops orchestrator/tool-chatter text
-            from the last user event (e.g., "For context:", backticked tool dumps).
-          text_preview_len: Max chars per text preview in DEBUG logs.
-          max_text_previews: Max number of text previews to include in DEBUG logs.
-        """
- 
-        super().__init__(*args, **kwargs)
-        self._filter_orchestration_noise = filter_orchestration_noise
-        self._text_preview_len = text_preview_len
-        self._max_text_previews = max_text_previews
+        super().__init__(
+            name=name,
+            description=description,
+            **kwargs,
+        )
 
+        resolved_card_url = agent_card_url or agent_card
 
-    # ----- Properties that map to private attrs -----
+        if not resolved_card_url:
+            raise ValueError(
+                "RemoteServerManager requires agent_card or agent_card_url"
+            )
+
+        self._agent_card_url = resolved_card_url
+        self._card_url = resolved_card_url
+
+        self._client_manager = A2AClientManager(
+            httpx_client=httpx_client,
+            client_factory=a2a_client_factory,
+            timeout=timeout,
+        )
+
+        self._adapter = A2AAgentAdapter(
+            client_manager=self._client_manager,
+            agent_name=name,
+            agent_card_url=resolved_card_url,
+        )
+
+    # --------------------------------------------------
+    # Metadata properties
+    # --------------------------------------------------
+
     @property
     def capabilities(self) -> List[str]:
         return self._capabilities
@@ -117,331 +143,358 @@ class RemoteServerManager(RemoteA2aAgent):
     def version(self, value: Optional[str]) -> None:
         self._version = value
 
-
-
     async def ensure_metadata(self):
-        if getattr(self, "_metadata_hydrated", False):
-            return
-        try:
-            # Resolve the card if not already resolved
-            await self._ensure_httpx_client()
-            if getattr(self, "_agent_card_source", None):
-                self.card_url = self._agent_card_source
-                parsed = urlparse(self._agent_card_source)
-                base = f"{parsed.scheme}://{parsed.netloc}"
-                resolver = A2ACardResolver(httpx_client=self._httpx_client, base_url=base)
-                agent_card = await resolver.get_agent_card(relative_card_path=parsed.path)
-                self._agent_card = agent_card
-            card_dict = self._agent_card.model_dump(exclude_none=True, by_alias=True) if getattr(self, "_agent_card", None) else {}
-            desc, caps, skills, skills_full = extract_description_capabilities_skills(card_dict)
-            if not self.description and desc:
-                self.description = desc
-            self.capabilities = caps
-            self.skills = skills
-            self.skills_full = skills_full
-        except Exception as e:
-            logging.debug("[%s] ensure_metadata failed: %s", self.name, e)
-        finally:
-            self._metadata_hydrated = True
-
-    # -------------------------------------------------------------------------
-    # Outbound construction: LAST USER TURN ONLY + optional noise filtering
-    # -------------------------------------------------------------------------
-    def _construct_message_parts_from_session(self, ctx):
         """
-        Build A2A message parts using ONLY the last user event to prevent
-        token bleeding. Also attaches context_id from StateManager cache.
+        Compatibility hook for your dashboard/registry layer.
+        The loader already hydrates skills/capabilities.
+        """
+        return
+
+    # --------------------------------------------------
+    # ADK Context helpers
+    # --------------------------------------------------
+
+    def _get_orchestrator_state(self, ctx) -> dict:
+        session = getattr(ctx, "session", None)
+        state = getattr(session, "state", None) or {}
+
+        orch = state.get("orchestrator", {})
+
+        if isinstance(orch, dict):
+            return orch
+
+        return {}
+
+    def _get_current_task(self, ctx) -> dict:
+        orch = self._get_orchestrator_state(ctx)
+        task = orch.get("task")
+
+        if isinstance(task, dict):
+            return task
+
+        return {}
+
+    def _get_remote_continuation_ids(
+        self,
+        ctx,
+    ) -> tuple[str | None, str | None]:
+        """
+        Returns existing task_id/context_id only if this agent owns
+        the active orchestration task.
         """
 
-        events = ctx.session.events or []
-        last_user_event = None
+        task = self._get_current_task(ctx)
 
-        # ✅ Find last REAL user message (skip yes/no approvals)
-        for e in reversed(events):
-            if e.author != "user":
-                continue
+        task_id = task.get("task_id")
+        context_id = task.get("context_id")
+        owner = task.get("owner")
+        state = task.get("state")
+        interaction = task.get("interaction")
 
-            text_parts = getattr(e.content, "parts", []) or []
+        if owner != self.name:
+            logger.info(
+                "[A2A NO CONTINUATION] agent=%s owner=%s state=%s interaction=%s task_id=%s context_id=%s",
+                self.name,
+                owner,
+                state,
+                interaction,
+                task_id,
+                context_id,
+            )
+            return None, None
 
-            is_approval = False
-            for p in text_parts:
-                txt = getattr(p, "text", "")
-                if isinstance(txt, str) and txt.strip().lower() in ["yes", "y", "no", "n"]:
-                    is_approval = True
-                    break
-
-            if is_approval:
-                continue
-
-            last_user_event = e
-            break
-
-        if not last_user_event or not getattr(last_user_event, "content", None):
-            logger.debug("[%s] No last user event found", self.name)
-            return [], None
-
-        # ✅ Build message parts
-        message_parts = []
-        parts = getattr(last_user_event.content, "parts", None) or []
-
-        for part in parts:
-            if self._filter_orchestration_noise:
-                text = getattr(part, "text", None)
-                if isinstance(text, str) and self._is_noise_text(text):
-                    continue
-
-            converted = self._genai_part_converter(part)
-            if not isinstance(converted, list):
-                converted = [converted] if converted else []
-
-            message_parts.extend(converted)
-
-        # =========================
-        # ✅ CONTEXT LOOKUP (FIXED)
-        # =========================
-        context_id = None
-
-        state_manager = getattr(ctx, "state_manager", None)
-
-        if state_manager:
-            try:
-                remote_state = state_manager.get_cached_remote_state(
-                    user_id=ctx.session.user_id,
-                    session_id=ctx.session.id,
-                    agent_name=self.name,
-                    scope_key=ctx.session.id,   # ✅ MUST match EventProcessor
-                )
-
-                if remote_state and remote_state.remote_context_id:
-                    context_id = remote_state.remote_context_id
-
-                logger.info(
-                    "[CACHE LOOKUP] agent=%s context_id=%s",
-                    self.name,
-                    context_id,
-                )
-
-            except Exception:
-                logger.exception("[STATE CACHE READ FAILED]")
-
-        # =========================
-        # ✅ DEBUG LOGGING
-        # =========================
-        if logger.isEnabledFor(logging.DEBUG):
-            try:
-                summary = self._summarize_parts_for_log(
-                    message_parts,
-                    text_preview_len=self._text_preview_len,
-                    max_text_previews=self._max_text_previews,
-                )
-
-                approx_tokens = self._estimate_tokens(summary.get("total_text_chars", 0))
-
-                logger.debug(
-                    (
-                        "[%s] A2A outbound summary | parts=%d | text_parts=%d | file_parts=%d "
-                        "| approx_tokens=%d | context_id=%s\n"
-                        "Text previews:\n%s\n"
-                        "Files:\n%s"
-                    ),
-                    self.name,
-                    summary["total_parts"],
-                    summary["text_parts_count"],
-                    summary["file_parts_count"],
-                    approx_tokens,
-                    (context_id[:8] + "…") if context_id else None,
-                    summary["text_previews_str"],
-                    summary["file_previews_str"],
-                )
-
-            except Exception:
-                logger.debug("[%s] Error summarizing parts", self.name)
-
-        return message_parts, context_id
-
-    # -------------------------------------------------------------------------
-    # Inbound handling: keep text-only + surface file parts for UI
-    # -------------------------------------------------------------------------
-    async def _handle_a2a_response(self, a2a_response, ctx):
-        """
-        Uses base conversion, then:
-          - Extracts file parts to event.custom_metadata["ui_files"] for UI use.
-          - Keeps only text parts in event.content (drops images/tools/etc.).
-        """
-        event = await super()._handle_a2a_response(a2a_response, ctx)
-        if not event:
-            return event
-
-        content = getattr(event, "content", None)
-        parts = getattr(content, "parts", None) if content else None
-
-
-
-        if not parts:
-            return event
-
-        ui_files = []
-        keep_text_parts = []
-        token_usage_meta=None
-
-        for p in parts:
-            fd = getattr(p, "file_data", None)
-            if fd and getattr(fd, "file_uri", None):
-                ui_files.append(
-                    {
-                        "url": fd.file_uri,
-                        "mime_type": getattr(fd, "mime_type", None),
-                    }
-                )
-                continue
-            
-
-            text_val=getattr(p,"text",None)
-
-            m=META_TOKEN_RE.match(text_val.strip()) # type: ignore
-
-            if m:
-                try:
-                    payload=json.loads(m.group(1))
-                    if isinstance(payload,dict) and payload.get("type") =="token_usage":
-                        token_usage_meta=(token_usage_meta or  {})| payload
-                    else:
-                        pass
-                
-                except Exception:
-                    pass
-
-
-            if getattr(p, "text", None) and not m:
-                    keep_text_parts.append(p)
-
-            # Drop everything else (function_call, function_response, images, etc.)
-
-        if ui_files:
-            event.custom_metadata = event.custom_metadata or {}
-            event.custom_metadata["ui_files"] = ui_files
-
-
-        if token_usage_meta:
-            event.custom_metadata=getattr(event,"custom_metadata",None) or {}
-            event.custom_metadata["token_usage"] = token_usage_meta
-        if content is not None:
-            content.parts = keep_text_parts
-
-        return event
-
-    # -------------------------------------------------------------------------
-    # Helpers
-    # -------------------------------------------------------------------------
-    def _is_noise_text(self, s: str) -> bool:
-        """
-        Identify orchestration/tool-chatter lines you don't want to forward.
-        Tune the predicates as your orchestrator evolves.
-        """
-        s_strip = (s or "").strip()
-        return (
-            s_strip.startswith("For context:")
-            or s_strip.startswith("[Cortex]")
-            or "`transfer_to_agent`" in s_strip
-            or s_strip.startswith("[Tool]")
+        logger.info(
+            "[A2A CONTINUATION IDS] agent=%s state=%s interaction=%s task_id=%s context_id=%s",
+            self.name,
+            state,
+            interaction,
+            task_id,
+            context_id,
         )
 
+        return task_id, context_id
 
 
-    def _summarize_parts_for_log(self, a2a_parts, *, text_preview_len: int, max_text_previews: int):
-            """
-            Produce a concise, safe summary of the parts being sent:
-            - Counts (total, text, files)
-            - Short text previews (truncated, single-line)
-            - Shortened file URIs (query stripped, tail of path only)
+    def _get_remote_message_from_recent_transfer(self, ctx) -> str | None:
+        """
+        Reads explicit _remote_message from recent transfer_to_agent function_call.
 
-            Supports BOTH:
-            • GenAI parts (e.g., .text, .file_data.file_uri, .file_data.mime_type)
-            • A2A parts   (e.g., Part(root=TextPart|FilePart), with root.text or root.file.uri)
-            """
-            text_previews = []
-            file_previews = []
-            text_parts_count = 0
-            file_parts_count = 0
-            total_text_chars = 0
+        This is the preferred source of truth:
+        - initial HITL approval sends original user task
+        - A2A continuation sends latest user reply
+        """
 
-            for p in a2a_parts:
-                # ---- GenAI-style TEXT ----
-                text = getattr(p, "text", None)
-                if isinstance(text, str) and text.strip():
-                    text_parts_count += 1
-                    total_text_chars += len(text)
-                    if len(text_previews) < max_text_previews:
-                        one_line = " ".join(text.split())
-                        preview = (one_line[:text_preview_len] + "…") if len(one_line) > text_preview_len else one_line
-                        text_previews.append(f"- {preview}")
+        session = getattr(ctx, "session", None)
+        events = getattr(session, "events", None) or []
+
+        for event in reversed(events):
+            content = getattr(event, "content", None)
+            parts = getattr(content, "parts", None) if content else None
+
+            if not parts:
+                continue
+
+            for part in parts:
+                fc = getattr(part, "function_call", None)
+
+                if not fc:
                     continue
 
-                # ---- GenAI-style FILE ----
-                fd = getattr(p, "file_data", None)
-                if fd and getattr(fd, "file_uri", None):
-                    file_parts_count += 1
-                    uri = getattr(fd, "file_uri", "")
-                    mime = getattr(fd, "mime_type", None)
-                    safe_uri = self._shorten_uri(uri)
-                    file_previews.append(f"- {mime or 'unknown'} | {safe_uri}")
+                if getattr(fc, "name", None) != "transfer_to_agent":
                     continue
 
-                # ---- A2A-style (wrapper with .root) ----
-                root = getattr(p, "root", None)
-                if root is not None:
-                    # A2A TextPart: root.text
-                    r_text = getattr(root, "text", None)
-                    if isinstance(r_text, str) and r_text.strip():
-                        text_parts_count += 1
-                        total_text_chars += len(r_text)
-                        if len(text_previews) < max_text_previews:
-                            one_line = " ".join(r_text.split())
-                            preview = (one_line[:text_preview_len] + "…") if len(one_line) > text_preview_len else one_line
-                            text_previews.append(f"- {preview}")
-                        continue
+                args = dict(getattr(fc, "args", None) or {})
 
-                    # A2A FilePart: root.file.uri (+ mime_type/mimeType)
-                    file_obj = getattr(root, "file", None)
-                    if file_obj is not None:
-                        uri = getattr(file_obj, "uri", None)
-                        if uri:
-                            file_parts_count += 1
-                            mime = getattr(file_obj, "mime_type", None) or getattr(file_obj, "mimeType", None)
-                            safe_uri = self._shorten_uri(uri)
-                            file_previews.append(f"- {mime or 'unknown'} | {safe_uri}")
-                            continue
+                if args.get("agent_name") != self.name:
+                    continue
 
-            previews_str = "\n".join(text_previews) if text_previews else "(no text parts)"
-            files_str = "\n".join(file_previews) if file_previews else "(no file parts)"
+                remote_message = args.get("_remote_message")
 
-            return {
-                "total_parts": len(a2a_parts),
-                "text_parts_count": text_parts_count,
-                "file_parts_count": file_parts_count,
-                "total_text_chars": total_text_chars,
-                "text_previews_str": previews_str,
-                "file_previews_str": files_str,
-            }
-    
+                if isinstance(remote_message, str) and remote_message.strip():
+                    logger.info(
+                        "[A2A REMOTE MESSAGE FROM TRANSFER] agent=%s message=%s",
+                        self.name,
+                        remote_message[:250],
+                    )
+                    return remote_message.strip()
 
-    def _shorten_uri(self, uri: str, keep_tail: int = 36) -> str:
+        return None
+
+
+    def _extract_meta_text_parts(self, ctx) -> list[str]:
         """
-        Shorten potentially sensitive URIs for logging:
-        - drop query string
-        - show only the tail of the path
+        Extract META text parts such as tool tokens from current user content/session.
         """
+
+        user_content = getattr(ctx, "user_content", None)
+
+        if user_content and getattr(user_content, "parts", None):
+            parts = user_content.parts
+        else:
+            session = getattr(ctx, "session", None)
+            events = getattr(session, "events", None) or []
+
+            latest_user_event = None
+
+            for event in reversed(events):
+                if getattr(event, "author", None) == "user":
+                    latest_user_event = event
+                    break
+
+            if (
+                not latest_user_event
+                or not getattr(latest_user_event, "content", None)
+            ):
+                return []
+
+            parts = getattr(latest_user_event.content, "parts", None) or []
+
+        extras: list[str] = []
+
+        for part in parts:
+            text = getattr(part, "text", None)
+
+            if not isinstance(text, str):
+                continue
+
+            text = text.strip()
+
+            if text.startswith("[META:"):
+                extras.append(text)
+
+        return extras
+
+
+    def _is_noise_text(self, text: str) -> bool:
+        stripped = (text or "").strip()
+
+        return (
+            stripped.startswith("For context:")
+            or stripped.startswith("[Cortex]")
+            or "`transfer_to_agent`" in stripped
+            or stripped.startswith("[Tool]")
+        )
+
+    def _extract_user_message_and_extra_parts(
+        self,
+        ctx,
+    ) -> tuple[str, list[str]]:
+        """
+        Extract the current user message.
+
+        Priority:
+        1. ctx.user_content
+        2. latest ADK session user event
+
+        This avoids reconstructing entire ADK session history.
+        """
+        transfer_message = self._get_remote_message_from_recent_transfer(ctx)
+
+        if transfer_message:
+            return transfer_message, self._extract_meta_text_parts(ctx)
+        
+        user_content = getattr(ctx, "user_content", None)
+
+        if user_content and getattr(user_content, "parts", None):
+            parts = user_content.parts
+        else:
+            session = getattr(ctx, "session", None)
+            events = getattr(session, "events", None) or []
+
+            latest_user_event = None
+
+            for event in reversed(events):
+                if getattr(event, "author", None) == "user":
+                    latest_user_event = event
+                    break
+
+            if (
+                not latest_user_event
+                or not getattr(latest_user_event, "content", None)
+            ):
+                return "", []
+
+            parts = getattr(latest_user_event.content, "parts", None) or []
+
+        text_parts: list[str] = []
+
+        for part in parts:
+            text = getattr(part, "text", None)
+
+            if not isinstance(text, str):
+                continue
+
+            if not text.strip():
+                continue
+
+            if self._is_noise_text(text):
+                continue
+
+            text_parts.append(text.strip())
+
+        if not text_parts:
+            return "", []
+
+        primary_message = text_parts[0]
+        extra_parts = text_parts[1:]
+
+        return primary_message, extra_parts
+
+    # --------------------------------------------------
+    # ADK Event builder
+    # --------------------------------------------------
+
+    def _build_adk_event(self, parsed, ctx) -> Event:
+        parts = []
+
+        if parsed.text:
+            parts.append(
+                genai_types.Part(text=parsed.text)
+            )
+
+        content = genai_types.Content(
+            role="model",
+            parts=parts,
+        )
+
+        custom_metadata: dict[str, Any] = {}
+
+        if parsed.task_id:
+            custom_metadata[A2A_METADATA_PREFIX + "task_id"] = parsed.task_id
+
+        if parsed.context_id:
+            custom_metadata[A2A_METADATA_PREFIX + "context_id"] = parsed.context_id
+
+        if parsed.request_dump:
+            custom_metadata[A2A_METADATA_PREFIX + "request"] = parsed.request_dump
+
+        if parsed.response_dump:
+            custom_metadata[A2A_METADATA_PREFIX + "response"] = parsed.response_dump
+
+        if parsed.metadata:
+            custom_metadata.update(parsed.metadata)
+
+        return Event(
+            author=self.name,
+            content=content,
+            invocation_id=ctx.invocation_id,
+            branch=ctx.branch,
+            custom_metadata=custom_metadata,
+            partial=False,
+        )
+
+    # --------------------------------------------------
+    # ADK BaseAgent implementation
+    # --------------------------------------------------
+
+    async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:
+        user_message, extra_parts = self._extract_user_message_and_extra_parts(ctx)
+
+        if not user_message:
+            logger.warning(
+                "[A2A EMPTY USER MESSAGE] agent=%s",
+                self.name,
+            )
+
+            yield Event(
+                author=self.name,
+                content=genai_types.Content(
+                    role="model",
+                    parts=[],
+                ),
+                invocation_id=ctx.invocation_id,
+                branch=ctx.branch,
+                custom_metadata={
+                    "warning": "No user message found for A2A request",
+                },
+                partial=False,
+            )
+            return
+
+        task_id, context_id = self._get_remote_continuation_ids(ctx)
+
+        logger.info(
+            "[A2A RUN] agent=%s task_id=%s context_id=%s message=%s",
+            self.name,
+            task_id,
+            context_id,
+            user_message[:250],
+        )
+
         try:
-            u = urlparse(uri)
-            path = u.path or ""
-            tail = path[-keep_tail:] if len(path) > keep_tail else path
-            base = f"{u.scheme}://{u.netloc}" if (u.scheme and u.netloc) else ""
-            return f"{base}/…{tail}"
-        except Exception:
-            return (uri[:keep_tail] + "…") if len(uri) > keep_tail else uri
+            async for parsed in self._adapter.stream_message(
+                message=user_message,
+                task_id=task_id,
+                context_id=context_id,
+                extra_text_parts=extra_parts,
+            ):
+                yield self._build_adk_event(parsed, ctx)
 
-    def _estimate_tokens(self, char_count: int) -> int:
-        """
-        Rough heuristic: ~4 chars/token. Good for spotting regressions in DEBUG logs.
-        """
-        return max(1, char_count // 4)
+        except Exception as exc:
+            logger.exception(
+                "[A2A REQUEST FAILED] agent=%s",
+                self.name,
+            )
+
+            yield Event(
+                author=self.name,
+                error_message=f"A2A request failed: {exc}",
+                invocation_id=ctx.invocation_id,
+                branch=ctx.branch,
+                custom_metadata={
+                    "a2a:error": str(exc),
+                },
+                partial=False,
+            )
+
+    async def _run_live_impl(self, ctx) -> AsyncGenerator[Event, None]:
+        raise NotImplementedError(
+            f"_run_live_impl for {type(self)} is not implemented."
+        )
+        yield
+
+    async def cleanup(self):
+        try:
+            await self._client_manager.close()
+        except Exception:
+            logger.exception("[A2A CLIENT CLEANUP FAILED]")

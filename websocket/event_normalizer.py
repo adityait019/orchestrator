@@ -10,6 +10,8 @@ logger = logging.getLogger(__name__)
 # ✅ STANDARDIZED EVENT MODEL (EXTENDED FOR FUTURE USE)
 # =========================================================
 
+
+
 @dataclass
 class UnifiedEvent:
     # ✅ content
@@ -83,6 +85,39 @@ def extract_files_from_part(part: Any) -> List[str]:
 
     return files
 
+
+
+def extract_text_from_a2a_message(message: Any) -> Optional[str]:
+    """
+    Extract text from an A2A message dictionary:
+    {
+        "parts": [
+            {"kind": "text", "text": "..."}
+        ]
+    }
+    """
+    if not isinstance(message, dict):
+        return None
+
+    parts = message.get("parts") or []
+
+    chunks: list[str] = []
+
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+
+        text = part.get("text")
+
+        if isinstance(text, str):
+            cleaned = text.strip()
+            if cleaned:
+                chunks.append(cleaned)
+
+    if chunks:
+        return "\n".join(chunks).strip()
+
+    return None
 
 # =========================================================
 # ✅ MAIN NORMALIZER (FINAL VERSION)
@@ -163,7 +198,16 @@ def normalize_event(event: Any) -> UnifiedEvent:
                 state = (status.get("state") or "").lower()
                 ts = status.get("timestamp")
                 msg = status.get("message")
+                # ✅ Extract user-facing A2A status message text for ALL states,
+                # including input-required and completed.
+                
+                status_text = extract_text_from_a2a_message(msg)
 
+                if status_text:
+                    if ue.text:
+                        ue.text = f"{ue.text}\n{status_text}".strip()
+                    else:
+                        ue.text = status_text
                 if state:
                     ue.metadata["a2a:state"] = state
                     ue.a2a_state = state
@@ -196,7 +240,19 @@ def normalize_event(event: Any) -> UnifiedEvent:
                     meta2 = status.get("metadata")
                     if isinstance(meta2, dict):
                         token_usage = meta2.get("token_usage")
+            # ✅ Fallback: if status.message did not provide text,
+            
+            # extract the latest text from A2A history.
+            if not ue.text:
+                history = a2a_resp.get("history") or []
 
+                if isinstance(history, list):
+                    for history_msg in reversed(history):
+                        history_text = extract_text_from_a2a_message(history_msg)
+
+                        if history_text:
+                            ue.text = history_text
+                            break
         if token_usage:
             logger.debug("[✅ TOKEN USAGE FOUND]: %s", token_usage)
 

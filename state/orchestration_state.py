@@ -1,4 +1,5 @@
-#state/orchestration_state.py
+# state/orchestration_state.py
+
 from typing import Dict, Any, List, Optional, TypedDict
 
 
@@ -6,6 +7,7 @@ class TaskStateDict(TypedDict, total=False):
     owner: str
     state: str
     task_id: str
+    context_id: str
     interaction: str
 
 
@@ -21,7 +23,6 @@ class OrchestrationState:
         self.artifacts: List[dict] = data.get("artifacts", [])
         self.memory: Dict[str, Any] = data.get("memory", {})
 
-        # ✅ typed task
         self.task: Optional[TaskStateDict] = data.get("task")
 
     def to_dict(self):

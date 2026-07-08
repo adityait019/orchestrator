@@ -8,7 +8,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-AUTH_ME_URL = os.getenv("AUTH_ME_URL", "http://localhost:8000/auth/me")
+AUTH_ME_URL = os.getenv("AUTH_ME_URL", "http://10.73.83.97:8000/auth/me")
 bearer = HTTPBearer(auto_error=False)
 
 

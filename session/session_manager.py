@@ -8,6 +8,17 @@ import uuid
 import mimetypes
 
 
+
+# In SessionManager
+
+import json
+from google.genai.types import Part
+
+META_TOOL_TOKEN_PREFIX = "[META:TOOL_TOKENS]"
+
+
+
+
 class SessionManager:
     """
     Manages:
@@ -130,6 +141,39 @@ class SessionManager:
         return parts
 
 
+
+    async def attach_tool_tokens(
+        self,
+        parts: list[Part],
+        payload: dict,  # {access_token, refresh_token}
+        session_id:str,
+    ):
+        """
+        TEMPORARY / TESTING ONLY.
+
+        Attaches tool tokens as a META text Part so they reach the remote agent.
+        The agent is responsible for:
+        - extracting
+        - forwarding to the tool
+        - NOT emitting them back as normal text
+        """
+
+        if not payload:
+            return parts
+
+        meta_blob = {
+            "type": "tool_credentials",
+            "access_token": payload.get("access_token"),
+            "refresh_token": payload.get("refresh_token"),
+        }
+
+        parts.append(
+            Part(
+                text=f"{META_TOOL_TOKEN_PREFIX} {json.dumps(meta_blob)}"
+            )
+        )
+
+        return parts
     # -----------------------------
     # WebSocket lifecycle
     # -----------------------------

@@ -1,15 +1,22 @@
-# tools/helpers_download.py
+# helpers_download.py
 import os
 import re
+import time
 import html
 from pathlib import Path
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, parse_qs, unquote
 import httpx
 import uuid
+import requests
 import aiofiles
 
-DOWNLOAD_ROOT = Path(os.getenv("DOWNLOAD_ROOT", "./downloads"))
+DOWNLOAD_ROOT = Path(os.getenv("CLASSIFIER_DOWNLOAD_ROOT", "./downloads"))
 DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Accept .xlsx and .xlsm (case-insensitive)
+# _ALLOWED_EXT = re.compile(r"\.xls[xm]?$", re.IGNORECASE)
+
+_ALLOWED_EXT = re.compile(r"\.(xlsx|xlsm|zip)$", re.IGNORECASE)
 
 def _sanitize_url(u: str) -> str:
     """
@@ -113,6 +120,9 @@ async def fetch_remote_file(
                 f"{resp.text[:200]}"
             )
 
+        # with open(local_path, "wb") as f:
+        #     async for chunk in resp.aiter_bytes(chunk_size=8192):
+        #         f.write(chunk)
 
         async with aiofiles.open(local_path, "wb") as f:
             async for chunk in resp.aiter_bytes(chunk_size=8192):

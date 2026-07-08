@@ -1,9 +1,11 @@
 #agent.py
-from google.genai.types import GenerateContentConfig
+from google.genai.types import GenerateContentConfig,ThinkingConfig
 from google.adk.agents.llm_agent import LlmAgent
 import os
 from google.adk.models.lite_llm import LiteLlm
 import logging
+# from google.adk.planners.built_in_planner import BuiltInPlanner,
+# from google.adk.planners import BasePlanner, BuiltInPlanner, PlanReActPlanner
 from agents.hitl_handler import hitl_after_model_callback,hitl_before_model_callback
 from google.adk.tools.load_memory_tool import load_memory_tool
 from dotenv import load_dotenv
@@ -17,30 +19,19 @@ content_config=GenerateContentConfig(
     stop_sequences=["<END_PLAN>"],
 )
 BASE_INSTRUCTION = """
-You are an orchestrator that can either:
+HITL Rules:
+1. Always ask for user confirmation before executing any action that could have significant consequences.
+2. If the user provides a vague or ambiguous instruction, ask clarifying questions to ensure you understand their intent.
+3. If the user asks you to perform a task that is outside your capabilities, inform them and suggest alternative approaches or resources.
 
-1. Respond directly if the request is simple or general
-2. Delegate to an agent if the task requires specific capabilities or skills
+Sub-agent Coordination:
+1. When a task requires the expertise of a specialized sub-agent, transfer the task to that sub-agent.
+2. If a sub-agent is unable to complete a task, escalate the issue back to the root agent for further guidance.
+3. if sub-agent responds and user is ask to do task for the generated response, then transfer the task to that sub-agent for execution.
 
-When deciding:
-
-- Compare user intent with:
-  • agent capabilities
-  • agent skills
-  • domains
-
-- Prefer agents when:
-  • specialized processing is needed
-  • external systems are involved
-  • actions must be executed
-
-- Prefer self-response when:
-  • the request is general conversation
-  • no agent adds value
-
-When transferring:
-- Select the most relevant agent based on capabilities and skills
-- Do not guess — rely on metadata provided
+MANDATORY:
+1. Always understand the user's request and the context before taking any action.
+some times user may ask to do task for the generated response, then transfer the task to that sub-agent for execution.
 """.strip()
 
 DEPLOYMENT_NAME=os.environ["DEPLOYMENT_NAME"]
@@ -63,9 +54,12 @@ root_agent = LlmAgent(
     description='A central orchestrator that understands user intent and coordinates specialized agents to complete tasks.',
     sub_agents=[],
     generate_content_config=content_config,
+    # The provided HITL callback's signature doesn't match the LlmAgent
+    # expected type in this environment. Omit it to avoid type errors.
     after_model_callback=hitl_after_model_callback,
     before_model_callback=hitl_before_model_callback,
-    tools=[load_memory_tool]
+    instruction=BASE_INSTRUCTION,
+    # tools=[load_memory_tool]
     
 
 )

@@ -6,9 +6,10 @@ logger = logging.getLogger(__name__)
 
 class WSEmitter:
 
-    def __init__(self, websocket):
+    def __init__(self, websocket,legacy_mode=False):
         self.ws = websocket
         self.closed = False
+        self.legacy_mode=legacy_mode
 
     # =========================================================
     # ✅ SAFE SEND
@@ -59,6 +60,14 @@ class WSEmitter:
         logger.info(f"[EMITTER: STATUS]: STAGE {stage} EXTRA: {extra}")
         await self._safe_send(payload)
 
+        if self.legacy_mode:
+            legacy={
+                "type":"status_type",
+                "stage":stage,
+            }
+            legacy.update(extra)
+            logger.info(f"[LEGACY EMITTER:STATUS]: sTAGE {stage} EXTRA: {extra}")
+            await self._safe_send(legacy)
     # =========================================================
     # ✅ TASK / PROGRESS (A2A)
     # =========================================================
@@ -85,6 +94,15 @@ class WSEmitter:
             "agent": agent,
         })
 
+        if self.legacy_mode:
+            legacy={
+            "type": "tool_call_type",
+            "name": name,
+            "args": args,
+        }
+            logger.info(f"[LEGACY EMITTER: TOOL CALL]: NAME: {name}, ARGS: {args}")
+            await self._safe_send(legacy)
+
     async def tool_result(self, name, response, agent=None):
         logger.info(f"[EMITTER: TOOL_RESULT]: NAME: {name}, RESPONSE: {response}")
 
@@ -94,6 +112,16 @@ class WSEmitter:
             "response": response,
             "agent": agent,
         })
+
+        if self.legacy_mode:
+            legacy={
+                "type":"tool_result_type",
+                "name":name,
+                "response":response,
+            }
+            logger.info(f"[LEGACY EMITTER: TOOL RESULT]: NAME: {name}, RESPONSE: {response}")
+            await self._safe_send(legacy)
+            
 
     # =========================================================
     # ✅ TOKEN USAGE
@@ -149,8 +177,16 @@ class WSEmitter:
     # =========================================================
     async def done(self):
         from datetime import datetime
+        ts=datetime.now().isoformat()
 
         await self._safe_send({
             "type": "done",
             "ts": datetime.now().isoformat()
         })
+        if self.legacy_mode:
+            logger.info("[LEGACY EMITTER: STATUS TYPE]: STAGE: DONE")
+            await self._safe_send({
+                "type":"status_type",
+                "stage":"done",
+                "ts":ts
+            })

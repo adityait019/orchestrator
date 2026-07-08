@@ -1,201 +1,142 @@
+# 👨‍💻 Cortex Developer Guide
 
-# 🧠 Agentic AI Orchestrator
+This guide explains the internal architecture and implementation details of Cortex.
 
-> **Capability‑driven, dynamic, multi‑agent orchestration with real‑time streaming, A2A, and workflow observability.**
-
-[![Framework: FastAPI](https://img.shields.io/badge/Framework-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![Transport: WebSocket](https://img.shields.io/badge/Transport-WebSocket-1f6feb.svg)](https://developer.mozilla.org/docs/Web/API/WebSockets_API)
-[![DB: PostgreSQL](https://img.shields.io/badge/DB-PostgreSQL-336791.svg)](https://www.postgresql.org/)
-[![LLM: Azure OpenAI](https://img.shields.io/badge/LLM-Azure%20OpenAI-0078D4.svg)](https://learn.microsoft.com/azure/ai-services/openai/)
-[![Protocol: A2A](https://img.shields.io/badge/Protocol-A2A-6f42c1.svg)](#)
-[![Agent Framework: Google ADK](https://img.shields.io/badge/Framework-Google%20ADK-EA4335.svg)](#)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+Unlike the README, which focuses on getting started, this guide is intended for contributors and developers who want to understand how Cortex works internally.
 
 ---
 
-## 📌 Overview
 
-This project implements a **Generic Multi‑Agent Orchestrator** that dynamically connects to remote agents, routes user requests, and tracks execution with robust observability.
+## System Overview
+Cortex is a capability-driven orchestration platform responsible for coordinating distributed AI agents.
 
-**Tech Stack**
-- **FastAPI** (orchestration API & WebSocket streaming)
-- **WebSocket** (real‑time status, tool execution, file events, errors)
-- **Google ADK (Agent Development Kit)** (agent orchestration framework & patterns)
-- **A2A protocol** (Agent‑to‑Agent communication via JSON‑RPC, `/.well-known/agent-card.json`)
-- **PostgreSQL** (agent registry, workflow tracking, invocation history)
-- **Azure OpenAI via LiteLLM** (LLM backbone in root agent "Cortex")
-- **SQLAlchemy + Alembic** (ORM & database migrations)
+Rather than embedding business logic inside the orchestrator, Cortex dynamically discovers remote A2A-compatible agents through Agent Cards, selects the appropriate capability for a user request, delegates execution, and tracks the workflow lifecycle from start to completion.
 
----
-
-## 🏗️ High‑Level Architecture
-
-```
-Frontend (WebSocket)
-        ↓
-FastAPI Orchestrator
-        ↓
-Root Agent (Cortex)
-        ↓
-Remote Agents (via A2A protocol)
-        ↓
-PostgreSQL (Tracking & Registry)
-```
-
-> See [`architecture.puml`](architecture.puml) for the PlantUML diagram.
-
----
-
-## ⚙️ Core Components
-
-### 1) WebSocket Layer
-- Real‑time streaming of:
-  - Agent status updates
-  - Tool execution states
-  - File generation events
-  - Error states
-- Maintains **stateful session** per user (`session_id`)
-- Supports **file artifact forwarding**
-- Compatible with **A2A** remote agents
-
-### 2) Root Agent (Cortex)
-- Central orchestration brain:
-  - Understand user intent
-  - Select appropriate sub‑agents
-  - Forward artifacts **without reading them**
-  - Handle multi‑step execution
-  - Provide structured status updates
-- Uses **Azure OpenAI via LiteLLM**
-- Uses **RemoteServerManager** for dynamic A2A connections
-
-### 3) Dynamic Agent Registry
-- Agents **not hardcoded**
-- Endpoints:
-  - `POST /agents/add`
-  - `GET /agents/active`
-  - `DELETE /agents/{name}` (optional)
-- **AgentRegistry** table fields:
-  - `name, host, port, auth_token, is_active, is_healthy, created_at, last_health_check`
-- **Health Monitor**:
-  - Background async loop calling `/health`
-  - Writes `is_healthy` to DB
-- Cortex only receives **active + healthy** agents.
-
-### 4) A2A Protocol Integration
-- Each remote agent exposes: `/.well-known/agent-card.json`
-  - `name, description, skills, input_modes, output_modes, tags, streaming`
-- Orchestrator:
-  - Validates agent existence
-  - Connects dynamically
-  - Supports **streaming JSON‑RPC transport**
-
-### 5) File Handling System
-- Multi‑file upload
-- **Signed URL** generation with **exp + HMAC**
-- Secure access control
-- **Automatic forwarding** of file artifacts to agents
-- Flow: `Upload → Signed URL → Stored in session → Forwarded as file_data`
-
----
 
 ## 📂 Project Structure & File Mappings
 
 ### Entry Point
-| File | Responsibility |
-|------|---|
+
+| File           | Responsibility                                                                                                                                               |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **main_v2.py** | FastAPI app initialization, middleware setup (CORS), router registration, lifespan management (startup/shutdown), WebSocket endpoint, service initialization |
 
 ### Core Configuration
-| File | Responsibility |
-|------|---|
-| **core/config.py** | Centralized app configuration (`APP_NAME`, `DEFAULT_USER`), environment variables |
-| **core/runner_factory.py** | Factory function to instantiate `Runner` with root agent |
+
+| File                       | Responsibility                                                                    |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| **core/config.py**         | Centralized app configuration (`APP_NAME`, `DEFAULT_USER`), environment variables |
+| **core/runner_factory.py** | Factory function to instantiate `Runner` with root agent                          |
 
 ### Root Agent & Agent Framework
-| File | Responsibility |
-|------|---|
-| **agents/agent.py** | **Cortex** root agent definition, Azure OpenAI/LiteLLM integration, agent instructions, sub-agent management |
-| **agents/remote_agent_connections.py** | Remote agent connection utilities for A2A protocol communication |
+
+| File                                   | Responsibility                                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **agents/agent.py**                    | **Cortex** root agent definition, Azure OpenAI/LiteLLM integration, agent instructions, sub-agent management |
+| **agents/remote_agent_connections.py** | Remote agent connection utilities for A2A protocol communication                                             |
+| **agents/hitl_handler.py**             | Optional Human-in-the-Loop (HITL) handler for agent decision points                                          |
 
 ### API Routers
-| File | Responsibility |
-|------|---|
-| **routers/agent_registry.py** | Agent registration endpoints (`POST /agents/add`, `GET /agents/active`, etc.) |
-| **routers/run_agent_router.py** | REST endpoint for synchronous agent execution (`POST /run/`) |
-| **routers/file_router.py** | File management endpoints (upload, download, artifact serving) |
-| **routers/upload_router.py** | Multi-file upload handling with session integration |
+
+| File                            | Responsibility                                                                |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| **routers/agent_registry.py**   | Agent registration endpoints (`POST /agents/add`, `GET /agents/active`, etc.) |
+| **routers/run_agent_router.py** | REST endpoint for synchronous agent execution (`POST /run/`)                  |
+| **routers/file_router.py**      | File management endpoints (upload, download, artifact serving)                |
+| **routers/upload_router.py**    | Multi-file upload handling with session integration                           |
+| **routers/dashboard_router.py** | Admin dashboard endpoints for monitoring active workflows and agents etc.     |
+| **routers/histoy_router.py**    | Endpoints for chat-history                                                    |
 
 ### Real-Time Communication (WebSocket)
-| File | Responsibility |
-|------|---|
+
+| File                               | Responsibility                                                      |
+| ---------------------------------- | ------------------------------------------------------------------- |
 | **websocket/websocket_handler.py** | Main WebSocket connection handler, message routing, session binding |
-| **websocket/ws_emitter.py** | Emits WebSocket events (status, errors, tool progress, artifacts) |
-| **websocket/event_processor.py** | Processes incoming WebSocket events, delegates to services |
+| **websocket/ws_emitter.py**        | Emits WebSocket events (status, errors, tool progress, artifacts)   |
+| **websocket/event_processor.py**   | Processes incoming WebSocket events, delegates to services          |
+| **wesocket/event_normalizer.py**   | Normalizes event payloads for consistent structure and logging      |
 
 ### Business Logic Services
-| File | Responsibility |
-|------|---|
-| **services/workflow_service.py** | **Workflow Lifecycle**: creates `OrchestrationSession` per user prompt, tracks status (active/completed/failed), computes workflow completion |
+
+| File                                    | Responsibility                                                                                                                                             |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **services/workflow_service.py**        | **Workflow Lifecycle**: creates `OrchestrationSession` per user prompt, tracks status (active/completed/failed), computes workflow completion              |
 | **services/agent_execution_service.py** | **Invocation Tracking**: creates `AgentInvocation` rows per sub-agent call, manages step order, tracks input/output payloads, started/completed timestamps |
-| **services/agent_loader.py** | Loads active and healthy agents from registry, injects into Cortex |
-| **services/agent_sync_service.py** | Background sync loop for agent status/health updates |
-| **services/artifact_service.py** | Manages generated artifacts (files) from agent execution |
-| **services/file_service.py** | **Signed URL generation**, HMAC validation, TTL management, artifact access control |
-| **services/invocation_context.py** | Invocation context holder (invocation_id, agent_name, agent_session_id) |
+| **services/agent_loader.py**            | Loads active and healthy agents from registry, injects into Cortex                                                                                         |
+| **services/agent_sync_service.py**      | Background sync loop for agent status/health updates                                                                                                       |
+| **services/artifact_service.py**        | Manages generated artifacts (files) from agent execution                                                                                                   |
+| **services/file_service.py**            | **Signed URL generation**, HMAC validation, TTL management, artifact access control                                                                        |
+| **services/invocation_context.py**      | Invocation context holder (invocation_id, agent_name, agent_session_idk etc)                                                                               |
+| **services/chat_history_service.py**    | Optional chat history persistence and retrieval for user sessions                                                                                          |
+
+### a2a runtime plugin
+
+| File                                        | Responsibility                                                                          |
+| ------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **services/a2a_runtime/adapter.py**         | A2A runtime adapter for JSON-RPC calls to remote agents                                 |
+| **services/a2a_runtime/client_manager.py**  | Manages active A2A connections, handles retries, timeouts, and health checks            |
+| **services/a2a_runtime/response_parser.py** | Parses streaming responses from remote agents, normalizes events for WebSocket emission |
+| **services/a2a_runtime/models.py**          | Defines Pydantic models for A2A messages, agent cards, and invocation payloads          |
+
+### State Management
+
+| File                             | Responsibility                                                                               |
+| -------------------------------- | -------------------------------------------------------------------------------------------- |
+| **state/models.py**              | Pydantic models for session state, workflow state, and invocation state                      |
+| **state/state_manager.py**       | Manages in-memory state for active workflows, agent invocations, and session context         |
+| **state/orchestration_state.py** | Tracks the state of each orchestration workflow, including step order, status, and artifacts |
 
 ### Session Management
-| File | Responsibility |
-|------|---|
+
+| File                           | Responsibility                                                                                                                      |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **session/session_manager.py** | **Dual-mode session mgmt**: ADK persistent sessions (conversation memory) + in-memory active session mirror for WebSocket workflows |
 
 ### Database & ORM
-| File | Responsibility |
-|------|---|
-| **database/engine.py** | SQLAlchemy async engine setup |
-| **database/session.py** | Async session factory (`AsyncSessionLocal`) |
-| **database/models.py** | **ORM Models**: `AgentRegistry`, `OrchestrationSession`, `AgentInvocation` with relationships & indexes |
+
+| File                    | Responsibility                                                                                                                                      |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **database/engine.py**  | SQLAlchemy async engine setup                                                                                                                       |
+| **database/session.py** | Async session factory (`AsyncSessionLocal`)                                                                                                         |
+| **database/models.py**  | **ORM Models**: `AgentRegistry`, `OrchestrationSession`, `AgentInvocation`,`Artifact`,`ChatHistory`,`Dependencies` etc with relationships & indexes |
 
 ### Agent Registry (Management)
-| File | Responsibility |
-|------|---|
+
+| File                                 | Responsibility                                                                                                               |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | **agent_registry/health_monitor.py** | **Health Check Loop**: async task that periodically calls `GET /health` on each registered agent, updates `is_healthy` in DB |
 
 ### Infrastructure & Utilities
-| File | Responsibility |
-|------|---|
+
+| File                              | Responsibility                                                       |
+| --------------------------------- | -------------------------------------------------------------------- |
 | **infrastructure/a2a_factory.py** | A2A (Agent-to-Agent) protocol factory for remote agent communication |
-| **utils/agent_card_extractor.py** | Extracts agent capabilities from agent cards |
+| **utils/agent_card_extractor.py** | Extracts agent capabilities from agent cards                         |
 
 ### Database Migrations
-| File | Responsibility |
-|------|---|
-| **alembic.ini** | Alembic configuration file |
-| **migrations/env.py** | Alembic migration environment setup |
-| **migrations/script.py.mako** | Alembic migration template |
-| **migrations/versions/** | Versioned migration files (one per schema change) |
+
+| File                          | Responsibility                                    |
+| ----------------------------- | ------------------------------------------------- |
+| **alembic.ini**               | Alembic configuration file                        |
+| **migrations/env.py**         | Alembic migration environment setup               |
+| **migrations/script.py.mako** | Alembic migration template                        |
+| **migrations/versions/**      | Versioned migration files (one per schema change) |
 
 ### Configuration & Dependencies
-| File | Responsibility |
-|------|---|
-| **.env** | Environment variables (see [Configuration](#-configuration)) |
+
+| File               | Responsibility                                                                  |
+| ------------------ | ------------------------------------------------------------------------------- |
+| **.env**           | Environment variables (see [Configuration](#-configuration))                    |
 | **pyproject.toml** | Project metadata, dependencies (FastAPI, SQLAlchemy, Google ADK, LiteLLM, etc.) |
-| **main.py** | Alternative entry point (legacy) |
+| **main.py**        | Alternative entry point (legacy)                                                |
 
 ### Testing & Development Tools
-| File | Responsibility |
-|------|---|
-| **tools/** | Development utilities and testing scripts (not part of production runtime) |
-| **cli_testing.py** | CLI testing utilities |
-| **sample_testing.py** | Sample testing scripts |
 
-### Legacy/Unused Files
-| File | Responsibility |
-|------|---|
-| **agents/remote_agent_connections_v2.py** | Testing version (not used in production) |
-| **utils/file_manager.py** | File management utilities (not currently used) |
-| **websocket/a2a_utils.py** | A2A protocol utilities (not currently used) |
-| **database/create_tables.py** | Alternative table creation script (migrations preferred) |
-| **agent_registry/** (other files) | Alternative agent registry implementation (not used in main_v2.py) |
+| File                  | Responsibility                                                             |
+| --------------------- | -------------------------------------------------------------------------- |
+| **tools/**            | Development utilities and testing scripts (not part of production runtime) |
+| **cli_testing.py**    | CLI testing utilities                                                      |
+| **sample_testing.py** | Sample testing scripts                                                     |
 
 ---
 
@@ -210,7 +151,7 @@ PostgreSQL (Tracking & Registry)
    ↓
 3. WorkflowService.start_workflow() → creates OrchestrationSession (UUID)
    ↓
-4. AgentExecutionService.start_root_invocation() 
+4. AgentExecutionService.start_root_invocation()
    → creates AgentInvocation row (Cortex, step_order=1, status=working)
    ↓
 5. Runner.run_async(new_message=Content(text=prompt))
@@ -229,7 +170,7 @@ PostgreSQL (Tracking & Registry)
    - EventProcessor → WSEmitter → WebSocket client
    - Types: status, invocation_started, tool_progress, artifact, invocation_completed
    ↓
-9. WorkflowService.complete_workflow() 
+9. WorkflowService.complete_workflow()
    → marks OrchestrationSession as completed
    ↓
 10. Session Preserved for next prompt (ADK session_id keeps context)
@@ -237,11 +178,10 @@ PostgreSQL (Tracking & Registry)
 
 ---
 
-
-
 ## 🧱 Execution Tracking (Three-Layer Model)
 
 **OrchestrationSession (Workflow)**
+
 - New workflow UUID per user prompt
 - Table: `orchestration_sessions`
 - Fields:
@@ -252,6 +192,7 @@ PostgreSQL (Tracking & Registry)
   - Future replay capability
 
 **AgentInvocation (Execution Step)**
+
 - New row per sub‑agent call
 - Table: `agent_invocations`
 - Fields:
@@ -261,6 +202,7 @@ PostgreSQL (Tracking & Registry)
   - Workflow B: `step_order: 1→Cortex, 2→different_agent`
 
 **AgentRegistry (Capability & Health)**
+
 - Persistent agent metadata
 - Table: `agents`
 - Fields:
@@ -274,14 +216,15 @@ PostgreSQL (Tracking & Registry)
 
 ## 🧠 Session Separation Model
 
-| Layer                      | Purpose                                      | Managed By |
-|----------------------------|----------------------------------------------|---|
-| WebSocket `session_id`     | Transport connection (per client session)    | SessionManager (in-memory) |
-| ADK `session_id`           | Conversation memory (ADK persistent session) | DatabaseSessionService (Google ADK) |
-| Workflow UUID              | Execution tracking per request               | OrchestrationSession (DB) |
-| ADK `agent_session_id`     | Per-agent message history                    | Runner (ADK framework) |
+| Layer                  | Purpose                                      | Managed By                          |
+| ---------------------- | -------------------------------------------- | ----------------------------------- |
+| WebSocket `session_id` | Transport connection (per client session)    | SessionManager (in-memory)          |
+| ADK `session_id`       | Conversation memory (ADK persistent session) | DatabaseSessionService (Google ADK) |
+| Workflow UUID          | Execution tracking per request               | OrchestrationSession (DB)           |
+| ADK `agent_session_id` | Per-agent message history                    | Runner (ADK framework)              |
 
 **Benefits**:
+
 - ✅ Conversation context preserved across multiple prompts (ADK session)
 - ✅ Workflow tracking isolated **per request** (workflow UUID)
 - ✅ No cross‑workflow mixing or state leakage
@@ -295,6 +238,7 @@ PostgreSQL (Tracking & Registry)
 ### Active Tables
 
 **agents** (Agent Registry)
+
 ```sql
 CREATE TABLE agents (
   id SERIAL PRIMARY KEY,
@@ -310,6 +254,7 @@ CREATE TABLE agents (
 ```
 
 **orchestration_sessions** (Workflow)
+
 ```sql
 CREATE TABLE orchestration_sessions (
   id SERIAL PRIMARY KEY,
@@ -322,6 +267,7 @@ CREATE TABLE orchestration_sessions (
 ```
 
 **agent_invocations** (Execution Steps)
+
 ```sql
 CREATE TABLE agent_invocations (
   id SERIAL PRIMARY KEY,
@@ -337,6 +283,7 @@ CREATE TABLE agent_invocations (
 ```
 
 ### Future‑Ready Tables (Planned)
+
 - `agent_dependencies` (DAG execution ordering)
 - `agent_events` (streaming trace logging)
 - `artifacts` (generated file persistence)
@@ -374,97 +321,11 @@ CREATE TABLE agent_invocations (
 11. ADK sessions keep conversation context for future messages
 ```
 
-
 ---
 
 ## 📈 Execution Flow Sequence Diagram
 
-```plantuml
-@startuml ExecutionFlowSequence
-!pragma teoz true
-
-title Agentic Orchestrator — Execution Flow Sequence
-
-actor "Frontend\n(Web Client)" as FE
-participant "WebSocketHandler" as WS
-participant "EventProcessor" as EP
-participant "WorkflowService" as WF
-participant "AgentExecutionService" as AES
-participant "SessionManager" as SM
-participant "AgentLoader" as AL
-participant "Cortex Agent" as CORTEX
-participant "A2A Factory" as A2A
-participant "Remote Agent" as AGENT
-participant "WSEmitter" as EMITTER
-database "PostgreSQL" as DB
-
-== Initial Setup ==
-FE -> WS: WebSocket connect (/ws/{session_id})
-WS -> SM: ensure_session(user_id, session_id)
-SM -> DB: create/get ADK session
-
-== User Request Processing ==
-FE -> WS: send message {"prompt": "...", "files": [...]}
-WS -> EP: process_event(message)
-EP -> WF: start_workflow(user_id)
-WF -> DB: INSERT orchestration_sessions
-WF --> EP: return workflow
-
-EP -> AES: start_root_invocation(workflow, session_id, prompt)
-AES -> DB: INSERT agent_invocations (Cortex, step=1)
-AES --> EP: return invocation
-
-EP -> SM: get_session(user_id, session_id)
-SM -> DB: get ADK session
-SM --> EP: return session
-
-== Agent Orchestration ==
-EP -> SM: create_runner(session_service)
-SM --> EP: return Runner
-
-EP -> AL: load_active_agents()
-AL -> DB: SELECT agents WHERE is_active=true AND is_healthy=true
-DB --> AL: return healthy agents
-AL --> EP: return agent list
-
-EP -> CORTEX: run_async(user_msg)
-CORTEX -> CORTEX: LLM processes intent
-CORTEX -> A2A: get_client_for_agent(agent_name)
-A2A -> AGENT: A2A JSON-RPC call
-AGENT -> A2A: streaming response
-
-== Sub-agent Execution ==
-CORTEX -> AES: start_invocation(workflow, agent_name, step=2)
-AES -> DB: INSERT agent_invocations (sub-agent)
-AES --> CORTEX: return invocation
-
-CORTEX -> A2A: call_remote_agent(prompt, files)
-A2A -> AGENT: HTTP POST / with JSON-RPC
-AGENT -> A2A: process & respond
-A2A --> CORTEX: streaming results
-
-== Result Processing ==
-CORTEX -> AES: update_invocation_status(completed, output)
-AES -> DB: UPDATE agent_invocations SET status='completed'
-
-CORTEX -> EMITTER: emit_events(invocation_completed, artifacts)
-EMITTER -> FE: WebSocket events
-
-== Workflow Completion ==
-CORTEX -> WF: complete_workflow(workflow_id)
-WF -> DB: UPDATE orchestration_sessions SET status='completed'
-WF --> CORTEX: workflow done
-
-EMITTER -> FE: workflow_completed event
-
-== Session Preservation ==
-note over SM, DB
-ADK session persists conversation context
-for next user prompt
-end note
-
-@enduml
-```
+![Screenshot](sequence-diagram\sequence_diagram_upgrade.png)
 
 ---
 
@@ -474,7 +335,7 @@ end note
 
 ```sql
 -- Recent workflows
-SELECT 
+SELECT
   os.id as workflow_id,
   os.session_id,
   os.user_id,
@@ -490,7 +351,7 @@ ORDER BY os.created_at DESC;
 
 ```sql
 -- Detailed execution trace
-SELECT 
+SELECT
   ai.step_order,
   ai.agent_name,
   ai.status,
@@ -506,7 +367,7 @@ ORDER BY ai.step_order;
 
 ```sql
 -- Agent health status
-SELECT 
+SELECT
   name,
   is_active,
   is_healthy,
@@ -518,69 +379,43 @@ ORDER BY name;
 
 ### WebSocket Event Types
 
-| Event Type | Payload | Purpose |
-|---|---|---|
-| `status` | `{ stage, message }` | Status update (e.g., "Selecting best agent") |
-| `invocation_started` | `{ agent, step, workflow_id }` | Sub-agent invocation started |
-| `tool_progress` | `{ agent, detail }` | Tool execution progress (e.g., "extract_text") |
-| `artifact` | `{ name, signed_url }` | Artifact generated (file) |
-| `invocation_completed` | `{ agent, step, status }` | Sub-agent completed |
-| `workflow_completed` | `{ workflow_id, final_response }` | Entire workflow done |
-| `error` | `{ scope, message, agent? }` | Error occurred |
-
----
-
-## ✅ What’s Done
-
-- [x] Dynamic agent registration  
-- [x] Health monitoring  
-- [x] WebSocket streaming  
-- [x] A2A protocol integration  
-- [x] File artifact forwarding  
-- [x] Signed URL security  
-- [x] Workflow tracking (minimal invocation)  
-- [x] Step order tracking  
-- [x] Failure capture  
-- [x] Timezone‑safe DB schema  
-
----
-
-## 🛠️ Roadmap
-
-- Deterministic pipelines (DAG-based execution)
-- Dependency graph tracking & validation
-- Capability‑driven dynamic orchestration (matching skills to tasks)
-- Artifact persistence (long-term storage of generated files)
-- Event‑level streaming trace logging (detailed audit trail)
-- Retry mechanisms with exponential backoff
-- Workflow replay capability (rerun from saved state)
-- Cost tracking (per-agent, per-workflow)
-- Agent timeout handling & graceful degradation
-- Parallel agent execution (spawn multiple agents concurrently)
+| Event Type             | Payload                           | Purpose                                        |
+| ---------------------- | --------------------------------- | ---------------------------------------------- |
+| `status`               | `{ stage, message }`              | Status update (e.g., "Selecting best agent")   |
+| `invocation_started`   | `{ agent, step, workflow_id }`    | Sub-agent invocation started                   |
+| `tool_progress`        | `{ agent, detail }`               | Tool execution progress (e.g., "extract_text") |
+| `artifact`             | `{ name, signed_url }`            | Artifact generated (file)                      |
+| `invocation_completed` | `{ agent, step, status }`         | Sub-agent completed                            |
+| `workflow_completed`   | `{ workflow_id, final_response }` | Entire workflow done                           |
+| `error`                | `{ scope, message, agent? }`      | Error occurred                                 |
 
 ---
 
 ## 🔐 Security Best Practices
 
 ### A2A Communication
+
 - **Verify agent identity** via `/health` endpoint before trusting
 - **Sign all JSON-RPC calls** with shared secret or bearer token
 - **Validate agent_card** schema (`/.well-known/agent-card.json`)
 - **HTTPS only** for remote agent communication
 
 ### File Handling
+
 - **HMAC-signed URLs** with configurable TTL (default: 600 sec)
 - **Expiration** timestamp embedded in signature
 - **No direct file reads** by Cortex (opaque artifact forwarding)
 - **Secure storage** with access logging
 
 ### Database & Secrets
+
 - **Least privilege**: App-specific DB user (no superuser)
 - **Connection pooling**: Async + pgbouncer for scale
 - **Secrets management**: `.env` file (dev only), Vault/Secrets Manager (prod)
 - **Audit timestamps**: All UTC, timezone-sensitive
 
 ### CORS & Origins
+
 - **Strict origin validation**: only approved WebSocket/HTTP origins
 - **No credentials** in logs
 - **Rate limiting** recommended at load balancer
@@ -590,17 +425,20 @@ ORDER BY name;
 ## 🧪 Testing Strategy
 
 ### Unit Tests
+
 - Mock A2A calls for sub-agents
 - Test workflow state transitions
 - Verify signed URL generation
 
 ### Integration Tests
+
 - Spin up test PostgreSQL container
 - Register mock agents
 - E2E workflow execution
 - Health monitor updates
 
 ### Example (pytest):
+
 ```python
 # tests/test_workflow_service.py
 @pytest.mark.asyncio
@@ -616,23 +454,27 @@ async def test_start_workflow_creates_session():
 ## 🐛 Troubleshooting
 
 ### Agent not appearing in active agents
+
 - ✅ Check `agents` table: `is_active=true AND is_healthy=true`
 - ✅ Run health monitor: Check `agent_registry/health_monitor.py`
 - ✅ Verify agent URL responds to `GET /health`
 - ✅ Check `last_health_check` timestamp (recent = good)
 
 ### Workflow stuck in "active" state
+
 - ✅ Check `agent_invocations` for failed sub-agents
 - ✅ Review WebSocket connection status
 - ✅ Manually update: `UPDATE orchestration_sessions SET status='failed' WHERE id=:id`
 
 ### File artifact not forwarded to sub-agent
+
 - ✅ Verify `signed_url` not expired (check TTL in URL)
 - ✅ Confirm file exists in `uploads/` folder
 - ✅ Check `FileService.generate_signed_url()` logic
 - ✅ Review sub-agent logs for 403 Forbidden on artifact fetch
 
 ### High latency
+
 - ✅ Profile agent execution times: `EXTRACT(EPOCH FROM (completed_at - started_at))`
 - ✅ Check database query performance (indexes on `orchestration_session_id`)
 - ✅ Monitor A2A network latency
@@ -701,6 +543,7 @@ LOG_FORMAT=json                            # json or text
 ### Configuration by Environment
 
 **Local (Development)**
+
 ```dotenv
 APP_ENV=local
 DATABASE_URL=postgresql+psycopg2://postgres:password@localhost:5432/orchestrator_dev
@@ -709,6 +552,7 @@ LOG_LEVEL=DEBUG
 ```
 
 **Staging**
+
 ```dotenv
 APP_ENV=staging
 DATABASE_URL=postgresql+psycopg2://user:pass@staging-db:5432/orchestrator
@@ -718,6 +562,7 @@ LOG_LEVEL=INFO
 ```
 
 **Production**
+
 ```dotenv
 APP_ENV=production
 DATABASE_URL=postgresql+asyncpg://user:pass@prod-db:5432/orchestrator
@@ -733,29 +578,17 @@ ALLOWED_WS_ORIGINS=https://app.example.com,https://api.example.com
 ## 🚀 Run Locally
 
 ### Prerequisites
+
 - **Python** 3.12+
-- **PostgreSQL** 13+ (Docker recommended)
-- **pip/poetry** for package management
+- **PostgreSQL** 12+
+- **uv** for package management
 - **.env** file with configuration
 
 ### Quick Start (with Docker Postgres)
 
 ```bash
-# 1. Create Python virtual environment
-python -m venv .venv
-source .venv/bin/activate        # Linux/Mac
-# or: .venv\Scripts\activate.ps1  # Windows PowerShell
-
-# 2. Install dependencies
-pip install -U pip
-pip install -e .                 # Install from pyproject.toml
-
-# 3. Start PostgreSQL (Docker)
-docker run -d --name pg_orchestrator \
-  -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=orchestrator \
-  -p 5432:5432 \
-  postgres:15
+# 1. Create Python virtual environment and do project setup
+uv sync
 
 # 4. Create .env
 cp .env.example .env
@@ -770,13 +603,13 @@ uvicorn main_v2:app --reload --port 8080
 
 ### Access Points
 
-| Endpoint | Purpose |
-|----------|---------|
-| `http://localhost:8080/docs` | **Swagger UI** (interactive API docs) |
-| `http://localhost:8080/redoc` | ReDoc (alternative API docs) |
-| `ws://localhost:8080/ws/{session_id}` | WebSocket endpoint |
-| `GET http://localhost:8080/agents/active` | List active agents |
-| `POST http://localhost:8080/run/` | Sync agent execution |
+| Endpoint                                  | Purpose                               |
+| ----------------------------------------- | ------------------------------------- |
+| `http://localhost:8080/docs`              | **Swagger UI** (interactive API docs) |
+| `http://localhost:8080/redoc`             | ReDoc (alternative API docs)          |
+| `ws://localhost:8080/ws/{session_id}`     | WebSocket endpoint                    |
+| `GET http://localhost:8080/agents/active` | List active agents                    |
+| `POST http://localhost:8080/run/`         | Sync agent execution                  |
 
 ### Health Check
 
@@ -798,22 +631,29 @@ curl https://agent-host:port/.well-known/agent-card.json
 ### WebSocket: `/ws/{session_id}` (Streaming)
 
 **Connect**
+
 ```
 ws://localhost:8080/ws/my-session-123
 ```
 
 **Send Message**
+
 ```json
 {
   "prompt": "Classify and score this document",
   "content": "optional alternative to prompt",
   "files": [
-    { "name": "report.pdf", "signed_url": "https://...&exp=...", "content_type": "application/pdf" }
+    {
+      "name": "report.pdf",
+      "signed_url": "https://...&exp=...",
+      "content_type": "application/pdf"
+    }
   ]
 }
 ```
 
 **Receive Events (streaming)**
+
 ```json
 {"type": "status", "stage": "planning", "message": "Selecting best agent..."}
 {"type": "invocation_started", "agent": "classification_bot", "step": 1, "workflow_id": "abc-123"}
@@ -827,6 +667,7 @@ ws://localhost:8080/ws/my-session-123
 ### REST: `/run/` (Sync Execution)
 
 **POST /run/**
+
 ```bash
 curl -X POST http://localhost:8080/run/ \
   -H "Content-Type: application/json" \
@@ -837,6 +678,7 @@ curl -X POST http://localhost:8080/run/ \
 ```
 
 **Response**
+
 ```json
 {
   "response": "Analysis complete: 1000 records processed..."
@@ -846,6 +688,7 @@ curl -X POST http://localhost:8080/run/ \
 ### Agent Registry: `/agents/`
 
 **Register Agent**
+
 ```bash
 POST /agents/add
 {
@@ -857,11 +700,13 @@ POST /agents/add
 ```
 
 **List Active Agents**
+
 ```bash
 GET /agents/active
 ```
 
 Response:
+
 ```json
 {
   "agents": [
@@ -883,6 +728,7 @@ Response:
 ```
 
 **Remove Agent**
+
 ```bash
 DELETE /agents/{agent_name}
 ```
@@ -890,6 +736,7 @@ DELETE /agents/{agent_name}
 ### File Management
 
 **Upload File** (multipart/form-data)
+
 ```bash
 POST /upload/
 Content-Type: multipart/form-data
@@ -902,6 +749,7 @@ Content-Type: application/pdf
 ```
 
 Response:
+
 ```json
 {
   "signed_url": "https://localhost:8000/artifacts/report.pdf?exp=1234567890&sig=abc123",
@@ -915,6 +763,7 @@ Response:
 ## 🧩 Implementation Notes & Design Patterns
 
 ### Core Principles
+
 - **Cortex forwards artifacts as opaque references** (never reads file content directly)
 - **Step order is per-workflow** and resets on each new workflow UUID
 - **Health monitor updates `is_healthy`** in background; only healthy agents injected into Cortex
@@ -922,6 +771,7 @@ Response:
 - **File artifacts are immutable** (signed URLs are one-time references)
 
 ### Design Patterns Used
+
 1. **Factory Pattern**: `runner_factory.py` → creates `Runner` instances
 2. **Service Pattern**: Separate `*_service.py` for business logic isolation
 3. **Repository Pattern**: CRUD ops normalized in `agent_registry/database.py`
@@ -929,6 +779,7 @@ Response:
 5. **Dependency Injection**: Services receive `db_session_factory`, `session_service`
 
 ### Error Handling
+
 - **Workflow fails gracefully**: Update `OrchestrationSession` status to `failed`
 - **Sub-agent timeout**: Create `AgentInvocation` with status `failed`, emit error event
 - **Invalid agent**: Skip from Cortex sub_agents list during health check
@@ -939,22 +790,26 @@ Response:
 ## 🔐 Security
 
 ### HMAC‑Signed URLs
+
 - **Generation**: `HMAC-SHA256(file_path + exp_timestamp, FILE_SIGNING_SECRET)`
 - **Validation**: Verify signature + check expiration before serving
 - **Artifact access control**: Only requestor with valid signature can download
 
 ### A2A Communication
+
 - **Signing**: JSON-RPC calls include `Authorization: Bearer <token>` or HMAC header
 - **Verification**: Sub-agents verify sender token/signature before accepting
 - **Encryption**: Use HTTPS for all remote agent communication
 
 ### Database & Credentials
+
 - **Least privilege**: App-specific DB user (no superuser)
 - **Connection pooling**: Use pgbouncer or AsyncPG for connection reuse
 - **Secrets management**: `.env` (dev only) → Vault/KeyVault (prod)
 - **Audit timestamps**: All UTC, timezone-sensitive
 
 ### WebSocket & CORS
+
 - **Origin validation**: Strict CORS policy via `ALLOWED_WS_ORIGINS`
 - **No credentials in logs**: Sanitize API keys, tokens, file paths
 - **Rate limiting**: Implement at reverse proxy (Nginx, WAF)
@@ -964,19 +819,20 @@ Response:
 ## 📚 Quick Reference
 
 ### Key Concepts
-| Term | Meaning |
-|------|---------|
-| **Cortex** | Root agent (LLM-powered orchestrator) |
-| **OrchestrationSession** | Workflow UUID (execution scope) |
-| **AgentInvocation** | Sub-agent invocation (step in workflow) |
-| **A2A** | Agent-to-Agent protocol (JSON-RPC over HTTP/HTTPS) |
-| **Signed URL** | HMAC-validated artifact reference (time-limited) |
-| **health_monitor** | Background loop checking agent `/health` |
-| **step_order** | Sequential counter per workflow (1, 2, 3...) |
+
+| Term                     | Meaning                                            |
+| ------------------------ | -------------------------------------------------- |
+| **Cortex**               | Root agent (LLM-powered orchestrator)              |
+| **OrchestrationSession** | Workflow UUID (execution scope)                    |
+| **AgentInvocation**      | Sub-agent invocation (step in workflow)            |
+| **A2A**                  | Agent-to-Agent protocol (JSON-RPC over HTTP/HTTPS) |
+| **Signed URL**           | HMAC-validated artifact reference (time-limited)   |
+| **health_monitor**       | Background loop checking agent `/health`           |
+| **step_order**           | Sequential counter per workflow (1, 2, 3...)       |
 
 ### Common Commands
 
-```bash
+````bash
 # Run tests
 pytest tests/ -v
 
@@ -996,108 +852,24 @@ alembic downgrade -1         # Rollback last migration
 # Development server
 uvicorn main_v2:app --reload --port 8080
 
-# Production server (Gunicorn + Uvicorn workers)
-gunicorn main_v2:app --worker-class uvicorn.workers.UvicornWorker --workers 4 --bind 0.0.0.0:8080
-```
 
----
-
-## 🚢 Deployment
-
-### Docker
-
-**Dockerfile**
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /app
-COPY pyproject.toml .
-RUN pip install -U pip && pip install .
-
-COPY . .
-
-EXPOSE 8080
-CMD ["uvicorn", "main_v2:app", "--host", "0.0.0.0", "--port", "8080"]
-```
-
-**docker-compose.yaml**
-```yaml
-version: '3.9'
-services:
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: orchestrator
-      POSTGRES_PASSWORD: password
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-
-  orchestrator:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:password@postgres:5432/orchestrator
-      AZURE_API_KEY: ${AZURE_API_KEY}
-      AZURE_API_BASE: ${AZURE_API_BASE}
-      DEPLOYMENT_NAME: ${DEPLOYMENT_NAME}
-    depends_on:
-      - postgres
-    volumes:
-      - ./uploads:/app/uploads
-
-volumes:
-  pg_data:
-```
-
-Run:
-```bash
-docker-compose up -d
-docker-compose exec orchestrator alembic upgrade head
-```
-
-### Kubernetes (Helm)
-
-```bash
-# Create namespace
-kubectl create namespace orchestrator
-
-# Deploy with Helm (create values.yaml)
-helm install orchestrator ./helm/orchestrator -n orchestrator -f values.yaml
-
-# Check deployment
-kubectl get pods -n orchestrator
-kubectl logs -n orchestrator deployment/orchestrator
-```
-
-### Production Checklist
-- [ ] Database credentials in Vault/KeyVault
-- [ ] Connection pooling configured (pgbouncer)
-- [ ] HTTPS/TLS enabled for all endpoints
-- [ ] Rate limiting at reverse proxy (Nginx)
-- [ ] Monitoring enabled (metrics, logs, traces)
-- [ ] Backups automated (daily DB snapshots)
-- [ ] Load balancer configured (sticky sessions for WebSocket)
-- [ ] Health checks exposed (`/health`)
-- [ ] Error logging centralized (ELK, Datadog)
-
----
 
 ## 🤝 Contributing
 
 ### Development Workflow
 
 1. **Clone & Setup**
+
    ```bash
    git clone https://github.com/git-repos/orchestrator
    cd orchestrator
-   python -m venv .venv && source .venv/bin/activate
-   pip install -e ".[dev]"
-   ```
+   uv sync
+   cp .env.example .env
+
+````
 
 2. **Create Feature Branch**
+
    ```bash
    git checkout -b feature/your-feature
    ```
@@ -1108,11 +880,13 @@ kubectl logs -n orchestrator deployment/orchestrator
    - If schema changes: `alembic revision --autogenerate -m "describe change"`
 
 4. **Test Locally**
+
    ```bash
    pytest tests/ -v --cov=services,agents,routers,database
    ```
 
 5. **Commit & Push**
+
    ```bash
    git add .
    git commit -m "feat: descriptive message"
@@ -1126,6 +900,7 @@ kubectl logs -n orchestrator deployment/orchestrator
    - Migration steps (if applicable)
 
 ### Code Standards
+
 - **Style**: Black (line length 100)
 - **Imports**: isort
 - **Types**: MyPy (strict mode)
@@ -1139,6 +914,7 @@ kubectl logs -n orchestrator deployment/orchestrator
 ## 📖 Resources & References
 
 ### Documentation
+
 - [FastAPI Docs](https://fastapi.tiangolo.com/) - Web framework
 - [Google ADK Docs](https://google-cloud.readme.io/) - Agent orchestration framework
 - [SQLAlchemy Async](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html) - ORM
@@ -1148,11 +924,13 @@ kubectl logs -n orchestrator deployment/orchestrator
 - [LiteLLM](https://litellm.vercel.app/) - LLM abstraction layer
 
 ### Related Projects
+
 - **a2a-sdk** (Agent-to-Agent protocol SDK)
 - **google-adk** (Google Agent Development Kit)
 - **litellm** (LLM provider abstraction)
 
 ### External References
+
 - [JSON-RPC 2.0 Spec](https://www.jsonrpc.org/specification) - A2A protocol base
 - [Agent Card Standard](https://github.com/google-research/agent-card-spec) - Discovery format
 - [Well-Known URIs RFC](https://tools.ietf.org/html/rfc8615) - `.well-known/` convention
@@ -1168,8 +946,8 @@ MIT — see [LICENSE](LICENSE).
 ## 👤 Authors
 
 - **Created**: 2026
-- **Maintainer**: Aditya Kumar
-- **Contributors**: Welcome! See [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Maintainer**: Aditya
+
 
 ---
 
@@ -1183,11 +961,22 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 **Last Updated**: 2026-04-14  
-**Current Version**: 0.1.0  
+**Current Version**: 0.1.0
 
 ---
 
-## 🧭 Architecture Diagram
+# OUTPUT on test
 
-![High Level Architecture Image](architecture_diagram.png?raw=true "High level Architecture Diagram")
->
+
+
+## 🚀 Roadmap
+
+Future improvements planned for Cortex:
+
+- [ ] Multi-agent workflow planning
+- [ ] Planner module
+- [ ] DAG-based execution engine
+- [ ] Parallel agent execution
+- [ ] Retry and recovery policies
+- [ ] Dynamic workflow replanning
+- [ ] Capability-based scheduling
