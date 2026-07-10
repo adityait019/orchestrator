@@ -98,7 +98,7 @@ This allows new agents to be added without modifying the orchestrator itself.
 
 <p align="center">
 
-![System Architecture](docs\architecture-diagram\architecture_diagram.png)
+![System Architecture](https://github.com/adityait019/orchestrator/blob/main/docs/architecture-diagram/architecture_diagram.png)
 
 </p>
 
