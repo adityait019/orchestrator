@@ -215,50 +215,103 @@ class RemoteServerManager(BaseAgent):
         return task_id, context_id
 
 
+    # def _get_remote_message_from_recent_transfer(self, ctx) -> str | None:
+    #     """
+    #     Reads explicit _remote_message from recent transfer_to_agent function_call.
+
+    #     This is the preferred source of truth:
+    #     - initial HITL approval sends original user task
+    #     - A2A continuation sends latest user reply
+    #     """
+
+    #     session = getattr(ctx, "session", None)
+    #     events = getattr(session, "events", None) or []
+
+    #     for event in reversed(events):
+    #         content = getattr(event, "content", None)
+    #         parts = getattr(content, "parts", None) if content else None
+
+    #         if not parts:
+    #             continue
+
+    #         for part in parts:
+    #             fc = getattr(part, "function_call", None)
+
+    #             if not fc:
+    #                 continue
+
+    #             if getattr(fc, "name", None) != "transfer_to_agent":
+    #                 continue
+
+    #             args = dict(getattr(fc, "args", None) or {})
+
+    #             if args.get("agent_name") != self.name:
+    #                 continue
+
+    #             remote_message = args.get("_remote_message")
+
+    #             if isinstance(remote_message, str) and remote_message.strip():
+    #                 logger.info(
+    #                     "[A2A REMOTE MESSAGE FROM TRANSFER] agent=%s message=%s",
+    #                     self.name,
+    #                     remote_message[:250],
+    #                 )
+    #                 return remote_message.strip()
+
+    #     return None
+
     def _get_remote_message_from_recent_transfer(self, ctx) -> str | None:
-        """
-        Reads explicit _remote_message from recent transfer_to_agent function_call.
+            """
+            Reads explicit _remote_message from the current transfer_to_agent function_call only.
 
-        This is the preferred source of truth:
-        - initial HITL approval sends original user task
-        - A2A continuation sends latest user reply
-        """
+            Avoids stale _remote_message from older HITL transfers.
+            """
 
-        session = getattr(ctx, "session", None)
-        events = getattr(session, "events", None) or []
+            session = getattr(ctx, "session", None)
+            events = getattr(session, "events", None) or []
+            current_invocation_id = getattr(ctx, "invocation_id", None)
 
-        for event in reversed(events):
-            content = getattr(event, "content", None)
-            parts = getattr(content, "parts", None) if content else None
+            for event in reversed(events[-20:]):
+                event_invocation_id = getattr(event, "invocation_id", None)
 
-            if not parts:
-                continue
-
-            for part in parts:
-                fc = getattr(part, "function_call", None)
-
-                if not fc:
+                if (
+                    current_invocation_id
+                    and event_invocation_id
+                    and event_invocation_id != current_invocation_id
+                ):
                     continue
 
-                if getattr(fc, "name", None) != "transfer_to_agent":
+                content = getattr(event, "content", None)
+                parts = getattr(content, "parts", None) if content else None
+
+                if not parts:
                     continue
 
-                args = dict(getattr(fc, "args", None) or {})
+                for part in parts:
+                    fc = getattr(part, "function_call", None)
 
-                if args.get("agent_name") != self.name:
-                    continue
+                    if not fc:
+                        continue
 
-                remote_message = args.get("_remote_message")
+                    if getattr(fc, "name", None) != "transfer_to_agent":
+                        continue
 
-                if isinstance(remote_message, str) and remote_message.strip():
-                    logger.info(
-                        "[A2A REMOTE MESSAGE FROM TRANSFER] agent=%s message=%s",
-                        self.name,
-                        remote_message[:250],
-                    )
-                    return remote_message.strip()
+                    args = dict(getattr(fc, "args", None) or {})
 
-        return None
+                    if args.get("agent_name") != self.name:
+                        continue
+
+                    remote_message = args.get("_remote_message")
+
+                    if isinstance(remote_message, str) and remote_message.strip():
+                        logger.info(
+                            "[A2A REMOTE MESSAGE FROM CURRENT TRANSFER] agent=%s message=%s",
+                            self.name,
+                            remote_message[:250],
+                        )
+                        return remote_message.strip()
+
+            return None
 
 
     def _extract_meta_text_parts(self, ctx) -> list[str]:
