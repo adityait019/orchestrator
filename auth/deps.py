@@ -2,6 +2,7 @@
 
 import logging
 import httpx
+import hmac
 from fastapi import Depends, HTTPException, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os
@@ -53,6 +54,35 @@ async def verify_token_via_auth_me(token: str) -> dict | None:
         return None
 
 
+async def get_current_user_from_token(token: str) -> dict:
+    """Return the canonical identity for a validated bearer token.
+
+    This helper is used by both HTTP and WebSocket authentication so clients
+    never get to select their own user or tenant scope.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing access token")
+
+    # Local/demo environments can opt into deterministic mock identity without
+    # depending on a separate tenant service.  This is deliberately opt-in so
+    # production retains external token validation.
+    if os.getenv("AUTH_MODE", "external").strip().lower() == "mock":
+        expected_token = os.getenv("MOCK_ACCESS_TOKEN", "dev-token")
+        if not hmac.compare_digest(token, expected_token):
+            raise HTTPException(status_code=401, detail="Invalid mock token")
+        return {
+            "user_id": os.getenv("MOCK_USER_ID", "aditya"),
+            "tenant_id": os.getenv("MOCK_TENANT_ID", "tenant-1"),
+            "roles": ["user"],
+            "raw": {"source": "mock"},
+        }
+
+    user = await verify_token_via_auth_me(token)
+    if not user or not user.get("user_id") or not user.get("tenant_id"):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return user
+
+
 # --------------------------------------------------
 # ✅ Dependency for authenticated user
 # --------------------------------------------------
@@ -61,6 +91,7 @@ async def get_current_user(
     x_middleware:        str | None = Header(default=None),
     x_forwarded_user:    str | None = Header(default=None),
     x_forwarded_tenant:  str | None = Header(default=None),
+    x_bff_secret:        str | None = Header(default=None),
 ) -> dict:
     # ── Trust the BFF middleware's forwarded identity ────────────────────────
     # If the request carries X-Middleware: bff along with the forwarded user
@@ -70,10 +101,11 @@ async def get_current_user(
     # to the tenant /auth/me (which is often unreachable on laptop dev setups
     # because AUTH_ME_URL defaults to a fixed remote IP).
     #
-    # In production, restrict the orchestrator to listen only on internal
-    # networks so external callers can't forge these headers. The middleware
-    # is the only thing that should ever speak directly to the orchestrator.
-    if (x_middleware or "").lower() == "bff" \
+    # The BFF must prove that it is the trusted proxy.  Header names alone
+    # are forgeable when an endpoint is accidentally exposed.
+    bff_secret = os.getenv("BFF_SHARED_SECRET", "")
+    if bff_secret and hmac.compare_digest(x_bff_secret or "", bff_secret) \
+            and (x_middleware or "").lower() == "bff" \
             and x_forwarded_user and x_forwarded_tenant:
         return {
             "user_id":   x_forwarded_user,

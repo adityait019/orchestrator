@@ -10,6 +10,8 @@ from websocket.ws_emitter import WSEmitter
 from websocket.event_processor import EventProcessor
 from services.invocation_context import InvocationContext, AgentRuntime
 from services.chat_history_service import chat_history_service
+from auth.deps import get_current_user_from_token
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +63,22 @@ class WebSocketHandler:
             await websocket.close(code=4401)
             return
 
-        user_id = frame.get("user_id")
-        tenant_id = frame.get("tenant_id")
-        token = frame.get("access_token")
-        roles = frame.get("roles", [])
-        
-        await emitter._safe_send({"type": "auth_ok"})
+        token = str(frame.get("access_token") or "").strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+
+        try:
+            identity = await get_current_user_from_token(token)
+        except HTTPException:
+            await emitter._safe_send({"type": "auth_failed"})
+            await websocket.close(code=4401)
+            return
+
+        user_id = identity["user_id"]
+        tenant_id = identity["tenant_id"]
+        roles = identity.get("roles", [])
+
+        await emitter._safe_send({"type": "auth_ok", "user_id": user_id, "tenant_id": tenant_id})
         logger.info(
             "WS authenticated: user=%s tenant=%s roles=%s session=%s",
             user_id, tenant_id, roles, session_id,
@@ -213,6 +225,7 @@ class WebSocketHandler:
 
                 invocation_ctx.runtimes[root_invocation.id] = runtime
                 invocation_ctx.active_invocation_id = root_invocation.id
+                invocation_ctx.root_invocation_id = root_invocation.id
 
                 logger.info("Initialized invocation context: %s", invocation_ctx)
                 # =========================
@@ -222,12 +235,6 @@ class WebSocketHandler:
 
                 parts = await self.session_manager.attach_last_upload(
                     parts, user_id, session_id
-                )
-
-                parts = await self.session_manager.attach_tool_tokens(
-                    parts,
-                    payload={"access_token": token},
-                    session_id=session_id,
                 )
 
                 user_msg = Content(role="user", parts=parts)
@@ -253,8 +260,22 @@ class WebSocketHandler:
                         finally:
                             await asyncio.sleep(0)
 
-                except Exception:
+                except Exception as exc:
                     logger.exception("[RUN ERROR]")
+                    active_runtime = None
+                    if invocation_ctx.active_invocation_id is not None:
+                        active_runtime = invocation_ctx.runtimes.get(
+                            invocation_ctx.active_invocation_id
+                        )
+                    if active_runtime and not active_runtime.completed:
+                        await self.agent_service.fail_invocation(
+                            active_runtime.invocation_id,
+                            str(exc) or "Agent execution failed",
+                            active_runtime.input_tokens,
+                            active_runtime.output_tokens,
+                            active_runtime.total_tokens,
+                        )
+                        active_runtime.completed = True
                     await emitter.bot_message("❌ Internal error")
                     continue
 
@@ -263,8 +284,8 @@ class WebSocketHandler:
                 # =========================
                 active_invocation_id = invocation_ctx.active_invocation_id
                 
-                final_runtime=None
-                if active_invocation_id:
+                final_runtime = None
+                if active_invocation_id is not None:
                     final_runtime = invocation_ctx.runtimes.get(active_invocation_id)
 
                 if not final_runtime:
@@ -334,6 +355,5 @@ class WebSocketHandler:
             logger.info("Client disconnected")
 
         finally:
-            await self.workflow.complete_workflow(session_id)
             self.session_manager.mark_disconnected(user_id, session_id)
-            logger.info("Cleanup done")
+            logger.info("Connection cleanup done; conversation remains active")

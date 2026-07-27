@@ -31,11 +31,10 @@ from schemas.admin import (
 
 from agents.agent import root_agent
 from services.agent_loader import build_single_agent
+from services.agent_runtime import agent_runtime_lock
 
 
 logger = logging.getLogger(__name__)
-agent_lock = asyncio.Lock()
-
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 META_TOOL_TOKEN_PREFIX = "[META:TOOL_TOKENS]"
@@ -444,7 +443,7 @@ async def create_agent(
         existing_names = {a.name for a in root_agent.sub_agents}
 
         if agent_instance and agent.name not in existing_names:
-            async with agent_lock:
+            async with agent_runtime_lock:
                 root_agent.sub_agents.append(agent_instance)
             logger.info(f"✅ Agent {agent.name} added dynamically")
     except Exception as e:
@@ -529,7 +528,7 @@ async def delete_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    async with agent_lock:
+    async with agent_runtime_lock:
         root_agent.sub_agents = [
             a for a in root_agent.sub_agents
             if a.name != agent_name

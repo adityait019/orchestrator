@@ -68,7 +68,7 @@ class FileService:
         )
 
         sig = self._sign(path, exp)
-        logger.info(f"Generated signed URL with path: {path}, exp: {exp}, sig: {sig}")
+        logger.debug("Generated signed URL for path=%s exp=%s", path, exp)
         return f"{self.base_url}{path}?exp={exp}&sig={sig}"
 
     def verify_sig(
@@ -100,5 +100,4 @@ class FileService:
         )
 
         expected_sig = self._sign(path, exp)
-        logger.info(f"Expected signature: {expected_sig}, Provided signature: {sig}")
         return hmac.compare_digest(expected_sig, sig)

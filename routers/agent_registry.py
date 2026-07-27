@@ -12,8 +12,7 @@ from agents.agent import root_agent
 from services.agent_loader import build_single_agent
 import logging
 import asyncio
-
-agent_lock = asyncio.Lock()
+from services.agent_runtime import agent_runtime_lock
 
 # logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -101,7 +100,7 @@ async def add_agent(payload: AddAgentRequest, db: AsyncSession = Depends(get_db)
         existing_names = {a.name for a in root_agent.sub_agents}
 
         if agent_instance and new_agent.name not in existing_names:
-            async with agent_lock:
+            async with agent_runtime_lock:
                 root_agent.sub_agents.append(agent_instance)
             logger.info(f"✅ Agent {new_agent.name} added dynamically")
         else:
@@ -143,7 +142,7 @@ async def deactivate_agent(
     agent.is_healthy=False
 
     # Remove from root agent
-    async with agent_lock:
+    async with agent_runtime_lock:
         root_agent.sub_agents = [
             a for a in root_agent.sub_agents
             if a.name != agent_name
@@ -182,7 +181,7 @@ async def activate_agent(
         existing_names = {a.name for a in root_agent.sub_agents}
 
         if agent_instance and agent.name not in existing_names:
-            async with agent_lock:
+            async with agent_runtime_lock:
                 root_agent.sub_agents.append(agent_instance)
             logger.info(f"✅ Agent {agent.name} activated and added to orchestrator")
 
@@ -218,7 +217,7 @@ async def delete_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # Remove from orchestrator (in-memory)
-    async with agent_lock:
+    async with agent_runtime_lock:
         root_agent.sub_agents = [
             a for a in root_agent.sub_agents
             if a.name != agent_name

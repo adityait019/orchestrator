@@ -130,6 +130,8 @@ class AgentExecutionService:
 
                 plan_id=plan_id,
                 task_node_id=task_node_id,
+                parent_invocation_id=parent_invocation_id,
+                input_artifacts=input_artifacts,
             )
 
             db.add(invocation)

@@ -107,15 +107,16 @@ async def get_agent_evaluation(
         completed = row["completed"] or 0
         failed = row["failed"] or 0
 
+        terminal_invocations = completed + failed
         success_rate = (
-            (completed / total_invocations) * 100
-            if total_invocations > 0
+            (completed / terminal_invocations) * 100
+            if terminal_invocations > 0
             else 0
         )
 
         failure_rate = (
-            (failed / total_invocations) * 100
-            if total_invocations > 0
+            (failed / terminal_invocations) * 100
+            if terminal_invocations > 0
             else 0
         )
 

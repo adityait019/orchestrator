@@ -119,6 +119,48 @@ def extract_text_from_a2a_message(message: Any) -> Optional[str]:
 
     return None
 
+
+def extract_token_usage(event: Any) -> Optional[Dict[str, int]]:
+    """Normalize provider/ADK usage metadata into the orchestration format."""
+    usage = getattr(event, "usage_metadata", None)
+    if usage is None:
+        return None
+
+    if hasattr(usage, "model_dump"):
+        usage = usage.model_dump(exclude_none=True)
+    elif not isinstance(usage, dict):
+        usage = vars(usage)
+
+    if not isinstance(usage, dict):
+        return None
+
+    def value(*keys: str) -> int:
+        for key in keys:
+            raw = usage.get(key)
+            if raw is not None:
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    input_tokens = value("prompt_token_count", "prompt_tokens", "input_tokens")
+    output_tokens = value(
+        "candidates_token_count", "completion_tokens", "output_tokens"
+    )
+    total_tokens = value("total_token_count", "total_tokens")
+    if not total_tokens:
+        total_tokens = input_tokens + output_tokens
+
+    if not (input_tokens or output_tokens or total_tokens):
+        return None
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
 # =========================================================
 # ✅ MAIN NORMALIZER (FINAL VERSION)
 # =========================================================
@@ -141,7 +183,10 @@ def normalize_event(event: Any) -> UnifiedEvent:
     ue.a2a_task_id = raw_meta.get("a2a:task_id")
     ue.a2a_context_id = raw_meta.get("a2a:context_id")
 
-    token_usage: Optional[Dict[str, int]] = None
+    # ADK/LiteLLM emits usage on ``event.usage_metadata``. A2A metadata below
+    # remains supported for remote agents and fills in when direct usage is
+    # unavailable.
+    token_usage = extract_token_usage(event)
 
     try:
         a2a_resp = raw_meta.get("a2a:response")

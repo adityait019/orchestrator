@@ -86,9 +86,13 @@ WS_BASE = f"ws://{os.getenv('ORCH_HOST', '127.0.0.1')}:{os.getenv('ORCH_PORT', 8
 ADMIN_TOKEN = os.getenv("SECRET_KEY", "super-secret")
 
 DEBUG=False
-USER_ID = "aditya"
-TENANT_ID = "tenant-1"
-ACCESS_TOKEN = "dev-token"
+# Required for the WebSocket handshake. In AUTH_MODE=mock, the shared local
+# .env can provide MOCK_ACCESS_TOKEN (default: dev-token); otherwise supply
+# ORCH_ACCESS_TOKEN accepted by the configured identity service.
+AUTH_MODE = os.getenv("AUTH_MODE", "external").strip().lower()
+ACCESS_TOKEN = os.getenv("ORCH_ACCESS_TOKEN", "").strip()
+if not ACCESS_TOKEN and AUTH_MODE == "mock":
+    ACCESS_TOKEN = os.getenv("MOCK_ACCESS_TOKEN", "dev-token").strip()
 
 # ------------------------------------------------------
 # API HELPERS
@@ -188,7 +192,7 @@ def build_overview_table(payload) -> Table:
         ("Task success rate", f"{d.get('task_success_rate', 0)}%"),
         ("Invocation success rate", f"{d.get('invocation_success_rate', 0)}%"),
         ("Failure rate", f"{d.get('failure_rate', 0)}%"),
-        ("Avg session latency", f"{d.get('avg_session_latency_sec', 0)}s"),
+        ("Avg prompt latency", f"{d.get('avg_turn_latency_sec', 0)}s"),
         ("Avg invocation latency", f"{d.get('avg_invocation_latency_sec', 0)}s"),
         ("Avg tokens / invocation", f"{d.get('avg_tokens_per_invocation', 0)}"),
         ("Total tokens", f"{d.get('total_tokens', 0):,}"),
@@ -359,11 +363,7 @@ async def upload_file(paths: list[str], session_id: str):
                 "session_id": session_id
             }
 
-            headers = {
-                "X-Middleware": "bff",
-                "X-Forwarded-User": USER_ID,
-                "X-Forwarded-Tenant": TENANT_ID,
-            }
+            headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
 
             res = await client.post(
                 f"{BASE_URL}/upload/",
@@ -599,6 +599,14 @@ async def chat_loop(ws, session_id: str):
 
 async def chat():
 
+    if not ACCESS_TOKEN:
+        console.print(
+            "Authentication requires ORCH_ACCESS_TOKEN. Alternatively, set "
+            "AUTH_MODE=mock and configure MOCK_ACCESS_TOKEN for local testing.",
+            style="red",
+        )
+        return
+
     session_id = str(uuid.uuid4())
 
     ws_url = f"{WS_BASE}/ws/{session_id}"
@@ -640,9 +648,6 @@ async def chat():
         auth_payload = {
             "type": "auth",
             "access_token": ACCESS_TOKEN,
-            "user_id": USER_ID,
-            "tenant_id": TENANT_ID,
-            "roles": ["user"]
         }
         await ws.send(json.dumps(auth_payload))
 

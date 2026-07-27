@@ -101,6 +101,22 @@ async def get_evaluation_overview(
         func.coalesce(func.sum(AgentInvocation.total_tokens), 0).label("total_tokens"),
     )
 
+    root_invocation_stats_query = select(
+        func.count(AgentInvocation.id).label("total_turns"),
+        func.coalesce(
+            func.sum(case((AgentInvocation.status == "completed", 1), else_=0)), 0
+        ).label("completed_turns"),
+        func.coalesce(
+            func.sum(case((AgentInvocation.status == "failed", 1), else_=0)), 0
+        ).label("failed_turns"),
+        func.avg(
+            func.extract(
+                "epoch",
+                AgentInvocation.completed_at - AgentInvocation.started_at,
+            )
+        ).label("avg_turn_latency_sec"),
+    ).where(AgentInvocation.parent_invocation_id.is_(None))
+
     # -----------------------------
     # 3. Event Metrics
     # -----------------------------
@@ -120,16 +136,13 @@ async def get_evaluation_overview(
     # -----------------------------
     session_stats = (await db.execute(session_stats_query)).mappings().one()
     invocation_stats = (await db.execute(invocation_stats_query)).mappings().one()
+    root_invocation_stats = (await db.execute(root_invocation_stats_query)).mappings().one()
     event_stats = (await db.execute(event_stats_query)).mappings().one()
     artifact_stats = (await db.execute(artifact_stats_query)).mappings().one()
 
     # -----------------------------
     # Extract values safely
     # -----------------------------
-    total_sessions = session_stats["total_sessions"] or 0
-    completed_sessions = session_stats["completed_sessions"] or 0
-    failed_sessions = session_stats["failed_sessions"] or 0
-
     total_invocations = invocation_stats["total_invocations"] or 0
     completed_invocations = invocation_stats["completed_invocations"] or 0
     failed_invocations = invocation_stats["failed_invocations"] or 0
@@ -143,21 +156,27 @@ async def get_evaluation_overview(
     # -----------------------------
     # KPIs (Derived Metrics)
     # -----------------------------
+    total_turns = root_invocation_stats["total_turns"] or 0
+    completed_turns = root_invocation_stats["completed_turns"] or 0
+    failed_turns = root_invocation_stats["failed_turns"] or 0
+    terminal_turns = completed_turns + failed_turns
+    terminal_invocations = completed_invocations + failed_invocations
+
     task_success_rate = (
-        (completed_sessions / total_sessions) * 100
-        if total_sessions > 0
+        (completed_turns / terminal_turns) * 100
+        if terminal_turns > 0
         else 0
     )
 
     invocation_success_rate = (
-        (completed_invocations / total_invocations) * 100
-        if total_invocations > 0
+        (completed_invocations / terminal_invocations) * 100
+        if terminal_invocations > 0
         else 0
     )
 
     failure_rate = (
-        (failed_invocations / total_invocations) * 100
-        if total_invocations > 0
+        (failed_invocations / terminal_invocations) * 100
+        if terminal_invocations > 0
         else 0
     )
 
@@ -174,22 +193,22 @@ async def get_evaluation_overview(
     )
 
     cost_per_successful_task = (
-        total_tokens / completed_sessions
-        if completed_sessions > 0
+        total_tokens / completed_turns
+        if completed_turns > 0
         else 0
     )
 
     throughput_per_hour_query = select(
-        func.count(OrchestrationSession.id) /
+        func.count(AgentInvocation.id) /
         func.greatest(
             func.extract(
                 "epoch",
-                func.max(OrchestrationSession.created_at)
-                - func.min(OrchestrationSession.created_at)
+                func.max(AgentInvocation.started_at)
+                - func.min(AgentInvocation.started_at)
             ) / 3600,
             1
         )
-    )
+    ).where(AgentInvocation.parent_invocation_id.is_(None))
 
     throughput_per_hour = (await db.execute(throughput_per_hour_query)).scalar() or 0
 
@@ -201,7 +220,7 @@ async def get_evaluation_overview(
         "invocation_success_rate": round(invocation_success_rate, 2),
         "failure_rate": round(failure_rate, 2),
 
-        "avg_session_latency_sec": round(session_stats["avg_session_latency_sec"] or 0, 2),
+        "avg_turn_latency_sec": round(root_invocation_stats["avg_turn_latency_sec"] or 0, 2),
         "avg_invocation_latency_sec": round(invocation_stats["avg_invocation_latency_sec"] or 0, 2),
 
         "avg_tokens_per_invocation": round(avg_tokens or 0, 2),

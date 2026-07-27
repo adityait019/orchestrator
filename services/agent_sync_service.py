@@ -2,11 +2,9 @@ import asyncio
 import logging 
 from agents.agent import root_agent
 from services.agent_loader import load_active_agents
+from services.agent_runtime import agent_runtime_lock
 
 logger = logging.getLogger(__name__)
-
-agent_lock = asyncio.Lock()
-
 
 async def agent_sync_loop(interval: int = 10):
     """
@@ -19,7 +17,7 @@ async def agent_sync_loop(interval: int = 10):
 
             latest_map = {a.name: a for a in latest_agents}
 
-            async with agent_lock:
+            async with agent_runtime_lock:
                 current_map = {a.name: a for a in root_agent.sub_agents}
 
                 current_names = set(current_map.keys())

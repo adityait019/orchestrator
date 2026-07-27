@@ -49,7 +49,9 @@ async def get_timeseries_metrics(
     # -----------------------------
     # Time bucket (safe label reuse)
     # -----------------------------
-    bucket = func.date_trunc(interval, OrchestrationSession.created_at).label("bucket")
+    # A conversation can stay active for days; invocation timestamps represent
+    # the actual prompt/agent execution time for evaluation.
+    bucket = func.date_trunc(interval, AgentInvocation.started_at).label("bucket")
 
     # -----------------------------
     # Metric Queries
@@ -62,16 +64,25 @@ async def get_timeseries_metrics(
                     func.coalesce(
                         func.sum(
                             case(
-                                (OrchestrationSession.status == "completed", 1),
+                                (AgentInvocation.status == "completed", 1),
                                 else_=0
                             )
                         ),
                         0,
                     )
                     * 100.0
-                    / func.nullif(func.count(OrchestrationSession.session_id), 0)
+                    / func.nullif(
+                        func.sum(
+                            case(
+                                (AgentInvocation.status.in_(["completed", "failed"]), 1),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    )
                 ).label("value"),
             )
+            .where(AgentInvocation.parent_invocation_id.is_(None))
             .group_by(bucket)
         )
 
@@ -82,11 +93,12 @@ async def get_timeseries_metrics(
                 func.avg(
                     func.extract(
                         "epoch",
-                        OrchestrationSession.completed_at
-                        - OrchestrationSession.created_at,
+                        AgentInvocation.completed_at
+                        - AgentInvocation.started_at,
                     )
                 ).label("value"),
             )
+            .where(AgentInvocation.parent_invocation_id.is_(None))
             .group_by(bucket)
         )
 
@@ -99,11 +111,6 @@ async def get_timeseries_metrics(
                     0
                 ).label("value"),
             )
-            .join(
-                AgentInvocation,
-                AgentInvocation.orchestration_session_id
-                == OrchestrationSession.session_id,  # ✅ FIXED
-            )
             .group_by(bucket)
         )
 
@@ -112,11 +119,6 @@ async def get_timeseries_metrics(
             select(
                 bucket,
                 func.count(AgentInvocation.id).label("value"),
-            )
-            .join(
-                AgentInvocation,
-                AgentInvocation.orchestration_session_id
-                == OrchestrationSession.session_id,  # ✅ FIXED
             )
             .group_by(bucket)
         )

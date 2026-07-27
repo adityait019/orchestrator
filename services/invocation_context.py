@@ -33,6 +33,7 @@ class InvocationContext:
     # ✅ runtime tracking
     runtimes: Dict[int, AgentRuntime] = field(default_factory=dict)
     active_invocation_id: Optional[int] = None
+    root_invocation_id: Optional[int] = None
 
     # ✅ orchestration state (MAIN FIX)
     orch_state: Optional[OrchestrationState] = None

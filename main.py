@@ -34,6 +34,7 @@ from services.agent_sync_service import agent_sync_loop
 
 from session.session_manager import SessionManager
 from database.session import AsyncSessionLocal
+from database.engine import IS_LOCAL
 from agent_registry.health_monitor import health_check_loop
 from agents.agent import root_agent
 from state.state_manager import StateManager
@@ -85,6 +86,13 @@ sync_task: asyncio.Task | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global health_task, sync_task
+
+    if IS_LOCAL:
+        raise RuntimeError(
+            "DBMODE=local only supports the chat-history JSON store. "
+            "Cortex orchestration requires PostgreSQL; set DATABASE_URL and "
+            "DBMODE=postgres (or DBMODE=auto with a reachable database)."
+        )
 
     root_logger.info("🚀 FastAPI startup")
 

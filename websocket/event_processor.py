@@ -472,6 +472,7 @@ class EventProcessor:
                         agent_name=agent_name,
                         prompt=ctx["prompt"],
                         args=fn_args,
+                        parent_invocation_id=runtime.invocation_id,
                     )
 
                     new_runtime = type(runtime)(
