@@ -3,15 +3,17 @@ import websockets
 import json
 import httpx
 import os
-from rich.console import Console
+from rich.console import Console, Group
 from rich.prompt import Prompt
 import uuid
 from rich.panel import Panel
 from rich.text import Text
 from rich.table import Table
+from rich.live import Live
+from rich import box
+from logo import logo
 from dotenv import load_dotenv
-load_dotenv(override=True)
-
+load_dotenv()
 def render_separator():
     console.print("\n" + "-" * 70, style="dim")
 
@@ -79,13 +81,13 @@ def render_debug(meta):
     )
 console = Console()
 
-BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
-WS_BASE = os.getenv("WS_BASE_URL", "ws://localhost:8000")
+BASE_URL = f"http://{os.getenv('ORCH_HOST', '127.0.0.1')}:{os.getenv('ORCH_PORT', 8000)}"
+WS_BASE = f"ws://{os.getenv('ORCH_HOST', '127.0.0.1')}:{os.getenv('ORCH_PORT', 8000)}"
 ADMIN_TOKEN = os.getenv("SECRET_KEY", "super-secret")
 
-DEBUG=True
+DEBUG=False
 USER_ID = "aditya"
-TENANT_ID = "personal-resume-testing"
+TENANT_ID = "tenant-1"
 ACCESS_TOKEN = "dev-token"
 
 # ------------------------------------------------------
@@ -142,6 +144,186 @@ async def list_agents():
 
         for agent in data:
             console.print(f"- {agent['name']} ({agent['host']}:{agent['port']})")
+
+
+# ------------------------------------------------------
+# ADMIN DASHBOARD (/admin/evaluation/*, /agents/total_agents)
+# ------------------------------------------------------
+
+async def fetch_admin_json(client: httpx.AsyncClient, path: str, params: dict | None = None):
+    try:
+        res = await client.get(
+            f"{BASE_URL}{path}",
+            headers={"x-admin-token": ADMIN_TOKEN},
+            params=params,
+            timeout=8.0,
+        )
+        res.raise_for_status()
+        return {"ok": True, "data": res.json()}
+    except httpx.HTTPStatusError as e:
+        return {"ok": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:150]}"}
+    except httpx.RequestError as e:
+        return {"ok": False, "error": f"Request failed: {e!r}"}
+    except Exception as e:
+        return {"ok": False, "error": f"Unexpected error: {e!r}"}
+
+
+def _error_table(title: str, message: str) -> Table:
+    table = Table(title=f"❌ {title}", show_header=False, box=box.SIMPLE)
+    table.add_column("Error", style="red")
+    table.add_row(message)
+    return table
+
+
+def build_overview_table(payload) -> Table:
+    if not payload["ok"]:
+        return _error_table("Evaluation Overview", payload["error"])
+
+    d = payload["data"]
+    table = Table(title="📊 Evaluation Overview", show_header=False, box=box.SIMPLE_HEAD)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right", style="bold")
+
+    rows = [
+        ("Task success rate", f"{d.get('task_success_rate', 0)}%"),
+        ("Invocation success rate", f"{d.get('invocation_success_rate', 0)}%"),
+        ("Failure rate", f"{d.get('failure_rate', 0)}%"),
+        ("Avg session latency", f"{d.get('avg_session_latency_sec', 0)}s"),
+        ("Avg invocation latency", f"{d.get('avg_invocation_latency_sec', 0)}s"),
+        ("Avg tokens / invocation", f"{d.get('avg_tokens_per_invocation', 0)}"),
+        ("Total tokens", f"{d.get('total_tokens', 0):,}"),
+        ("Cost / successful task", f"{d.get('cost_per_successful_task', 0)}"),
+        ("Artifact generation rate", f"{d.get('artifact_generation_rate', 0)}"),
+        ("Event density", f"{d.get('event_density', 0)}"),
+        ("Throughput / hour", f"{d.get('throughput_per_hour', 0)}"),
+    ]
+    for label, value in rows:
+        table.add_row(label, value)
+    return table
+
+
+def build_leaderboard_table(payload) -> Table:
+    if not payload["ok"]:
+        return _error_table("Agent Leaderboard", payload["error"])
+
+    d = payload["data"]
+    table = Table(title=f"🏆 Agent Leaderboard ({d.get('total_agents', 0)} agents)", box=box.SIMPLE_HEAD)
+    table.add_column("Agent", style="magenta", no_wrap=True)
+    table.add_column("Invocations", justify="right")
+    table.add_column("Success %", justify="right")
+    table.add_column("Failure %", justify="right")
+    table.add_column("Avg Latency (s)", justify="right")
+    table.add_column("Avg Tokens", justify="right")
+    table.add_column("Total Tokens", justify="right")
+    table.add_column("Utilization", justify="right")
+
+    for a in d.get("agents", []):
+        success = a["success_rate"]
+        success_style = "green" if success >= 90 else ("yellow" if success >= 70 else "red")
+        table.add_row(
+            a["agent_name"],
+            str(a["total_invocations"]),
+            f"[{success_style}]{success}[/]",
+            f"{a['failure_rate']}",
+            f"{a['avg_latency_sec']}",
+            f"{a['avg_tokens']}",
+            f"{a['total_tokens']:,}",
+            f"{a['utilization']}",
+        )
+    return table
+
+
+def build_timeseries_table(payload, metric: str, ts_interval: str) -> Table:
+    if not payload["ok"]:
+        return _error_table("Timeseries", payload["error"])
+
+    d = payload["data"]
+    table = Table(title=f"📈 Timeseries — {metric} / {ts_interval}", box=box.SIMPLE_HEAD)
+    table.add_column("Timestamp", style="cyan", no_wrap=True)
+    table.add_column("Value", justify="right", style="bold")
+
+    for point in d.get("data", [])[-12:]:
+        table.add_row(str(point.get("timestamp")), str(point.get("value")))
+    return table
+
+
+def build_registry_table(payload) -> Table:
+    if not payload["ok"]:
+        return _error_table("Agent Registry", payload["error"])
+
+    agents = payload["data"] or []
+    table = Table(title=f"🗂️ Agent Registry ({len(agents)})", box=box.SIMPLE_HEAD)
+    table.add_column("Name", style="cyan")
+    table.add_column("Host", no_wrap=True)
+    table.add_column("Port", justify="right")
+    table.add_column("Active", justify="center")
+    table.add_column("Healthy", justify="center")
+
+    for a in agents:
+        table.add_row(
+            a.get("name", "-"),
+            a.get("host", "-"),
+            str(a.get("port", "-")),
+            "[green]✔[/]" if a.get("is_active") else "[red]✘[/]",
+            "[green]✔[/]" if a.get("is_healthy") else "[red]✘[/]",
+        )
+    return table
+
+
+async def _gather_dashboard_data(client: httpx.AsyncClient, metric: str, ts_interval: str):
+    overview, agents, timeseries, registry = await asyncio.gather(
+        fetch_admin_json(client, "/admin/evaluation/overview"),
+        fetch_admin_json(client, "/admin/evaluation/agents"),
+        fetch_admin_json(client, "/admin/evaluation/timeseries", {"metric": metric, "interval": ts_interval}),
+        fetch_admin_json(client, "/agents/total_agents"),
+    )
+    return overview, agents, timeseries, registry
+
+
+async def show_dashboard(
+    live: bool = False,
+    interval: float = 5.0,
+    metric: str = "success_rate",
+    ts_interval: str = "hour",
+):
+    """
+    /dashboard            -> one-shot snapshot of overview + leaderboard +
+                              timeseries + registry
+    /dashboard live [sec]  -> same panels, auto-refreshing every `sec`
+                              seconds until Ctrl+C
+    """
+    async with httpx.AsyncClient() as client:
+        if not live:
+            overview, agents, timeseries, registry = await _gather_dashboard_data(
+                client, metric, ts_interval
+            )
+            render_separator()
+            console.print(build_overview_table(overview))
+            console.print(build_leaderboard_table(agents))
+            console.print(build_timeseries_table(timeseries, metric, ts_interval))
+            console.print(build_registry_table(registry))
+            render_separator()
+            return
+
+        console.print(
+            "\n📡 [bold cyan]Live dashboard[/bold cyan] — Ctrl+C to return to chat\n"
+        )
+        try:
+            with Live(console=console, auto_refresh=False, screen=False) as live_view:
+                while True:
+                    overview, agents, timeseries, registry = await _gather_dashboard_data(
+                        client, metric, ts_interval
+                    )
+                    group = Group(
+                        build_overview_table(overview),
+                        build_leaderboard_table(agents),
+                        build_timeseries_table(timeseries, metric, ts_interval),
+                        build_registry_table(registry),
+                    )
+                    live_view.update(group, refresh=True)
+                    await asyncio.sleep(interval)
+        except KeyboardInterrupt:
+            console.print("\n👋 Returning to chat...\n", style="cyan")
 
 
 async def upload_file(paths: list[str], session_id: str):
@@ -252,6 +434,8 @@ async def chat_loop(ws, session_id: str):
 /remove <name>
 /list
 /upload <file1> [file2 file3 ...]
+/dashboard                 — one-shot snapshot (overview, leaderboard, timeseries, registry)
+/dashboard live [interval] — auto-refreshing view, Ctrl+C to return here (default 5s)
 /exit
 """)
                 continue
@@ -266,6 +450,24 @@ async def chat_loop(ws, session_id: str):
 
             if parts[0] == "/list":
                 await list_agents()
+                continue
+
+            # ✅ ADMIN DASHBOARD (snapshot or live)
+            if parts[0] == "/dashboard":
+                args = parts[1:]
+                is_live = bool(args) and args[0] == "live"
+
+                interval = 5.0
+                if is_live and len(args) >= 2:
+                    try:
+                        interval = float(args[1])
+                    except ValueError:
+                        console.print(
+                            f"⚠️ Invalid interval '{args[1]}', using default 5s",
+                            style="yellow",
+                        )
+
+                await show_dashboard(live=is_live, interval=interval)
                 continue
 
             # ✅ ✅ MULTI FILE UPLOAD
@@ -296,6 +498,7 @@ async def chat_loop(ws, session_id: str):
         # ======================================
         # ✅ RECEIVE STREAM
         # ======================================
+
 
         current_agent = None
 
@@ -399,7 +602,12 @@ async def chat():
     session_id = str(uuid.uuid4())
 
     ws_url = f"{WS_BASE}/ws/{session_id}"
+    console.print(logo, style="bold bright_cyan",justify="center")
 
+    console.print(
+        f"🔌 Connecting to Orchestrator at [cyan]{ws_url}[/cyan] with session ID [yellow]{session_id}[/yellow]",
+        style="dim"
+    )
     async with websockets.connect(
         ws_url,
         open_timeout=20,
@@ -465,6 +673,7 @@ async def chat():
         # --------------------------------------------------
         # CHAT READY
         # --------------------------------------------------
+
         console.print(
             "🤖 Connected to Orchestrator",
             style="bold green"
