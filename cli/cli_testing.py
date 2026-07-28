@@ -11,7 +11,7 @@ from rich.text import Text
 from rich.table import Table
 from rich.live import Live
 from rich import box
-from logo import logo
+from logo import nexus_logo as logo
 from dotenv import load_dotenv
 load_dotenv()
 def render_separator():
