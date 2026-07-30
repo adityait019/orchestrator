@@ -1,4 +1,4 @@
-#websocket/event_processor_new.py
+#websocket/event_processor.py
 from __future__ import annotations
 from tools.helper_downloads import fetch_remote_file
 from websocket.event_normalizer import normalize_event
@@ -218,17 +218,6 @@ class EventProcessor:
                 )
 
             else:
-                # ctx["invocation_ctx"].orch_state.task = {
-                #     "owner": runtime.agent_name,
-                #     "state": raw_state,
-                #     "task_id": normalized.a2a_task_id or existing_task.get("task_id"),
-                #     "context_id": normalized.a2a_context_id or existing_task.get("context_id"),
-                #     "interaction": (
-                #         interaction
-                #         if interaction is not None
-                #         else existing_task.get("interaction")
-                #     ),
-                # }
 
                 ctx["invocation_ctx"].orch_state.task = {
                     "owner": runtime.agent_name,
@@ -278,29 +267,45 @@ class EventProcessor:
             or meta.get("tool_usage")
         )
 
+
         if isinstance(token_usage, dict):
-            input_tokens = int(token_usage.get("input_tokens", 0))
-            output_tokens = int(token_usage.get("output_tokens", 0))
-            total_tokens = int(token_usage.get("total_tokens", 0))
-
-            await self.agent_service.add_token_usage(
-                runtime.invocation_id,
-                input_tokens,
-                output_tokens,
-                total_tokens,
+            task_id_for_dedup = normalized.a2a_task_id or meta.get("a2a:task_id")
+            dedup_key = (
+                task_id_for_dedup,
+                token_usage.get("input_tokens"),
+                token_usage.get("output_tokens"),
+                token_usage.get("total_tokens"),
             )
 
-            runtime.input_tokens += input_tokens
-            runtime.output_tokens += output_tokens
-            runtime.total_tokens += total_tokens
+            if dedup_key in runtime.applied_token_usage_keys:
+                logger.info(
+                    "[DUPLICATE TOKEN USAGE SKIPPED] task_id=%s agent=%s tokens=%s",
+                    task_id_for_dedup, runtime.agent_name, dedup_key[1:],
+                )
+            else:
+                runtime.applied_token_usage_keys.add(dedup_key)
 
-            await self.emitter.token_usage(
-                agent=runtime.agent_name,
-                input_tokens=runtime.input_tokens,
-                output_tokens=runtime.output_tokens,
-                total_tokens=runtime.total_tokens,
-            )
+                input_tokens = int(token_usage.get("input_tokens", 0))
+                output_tokens = int(token_usage.get("output_tokens", 0))
+                total_tokens = int(token_usage.get("total_tokens", 0))
 
+                await self.agent_service.add_token_usage(
+                    runtime.invocation_id,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                )
+
+                runtime.input_tokens += input_tokens
+                runtime.output_tokens += output_tokens
+                runtime.total_tokens += total_tokens
+
+                await self.emitter.token_usage(
+                    agent=runtime.agent_name,
+                    input_tokens=runtime.input_tokens,
+                    output_tokens=runtime.output_tokens,
+                    total_tokens=runtime.total_tokens,
+                )
         # =========================
         # ✅ TOOL EVENTS
         # =========================
@@ -312,17 +317,6 @@ class EventProcessor:
             if phase == "call":
                 await self.emitter.tool_call(name=tool_name, args={}, agent=runtime.agent_name)
 
-            # elif phase == "response":
-            #     if getattr(runtime, "last_tool_response", None) == data:
-            #         return
-
-            #     runtime.last_tool_response = data
-
-            #     await self.emitter.tool_result(
-            #         name=tool_name,
-            #         response=data or {},
-            #         agent=runtime.agent_name,
-            #     )
 
             elif phase == "response":
                 if getattr(runtime, "last_tool_response", None) == data:
@@ -383,6 +377,7 @@ class EventProcessor:
 
                 await self.emitter.bot_message(clean, agent=runtime.agent_name)
 
+
         # =========================
         # ✅ FILES
         # =========================
@@ -390,6 +385,15 @@ class EventProcessor:
             urls = []
 
             for file_url in normalized.files:
+                if file_url in runtime.processed_file_urls:
+                    logger.info(
+                        "[DUPLICATE FILE SKIPPED] url=%s agent=%s",
+                        file_url, runtime.agent_name,
+                    )
+                    continue
+
+                runtime.processed_file_urls.add(file_url)
+
                 try:
                     file_id, filename, path = await fetch_remote_file(str(file_url))
 
@@ -472,7 +476,6 @@ class EventProcessor:
                         agent_name=agent_name,
                         prompt=ctx["prompt"],
                         args=fn_args,
-                        parent_invocation_id=runtime.invocation_id,
                     )
 
                     new_runtime = type(runtime)(

@@ -1,4 +1,4 @@
-# loaders/agents_loader.py
+# services/agents_loader.py
 
 import logging
 import asyncio
@@ -13,7 +13,7 @@ from database.session import AsyncSessionLocal
 from database.models import AgentRegistry
 
 from agents.remote_agent_connections import RemoteServerManager
-from google.adk.agents import BaseAgent  
+from google.adk.agents import BaseAgent
 from infrastructure.a2a_factory import a2a_client_factory
 from utils.agent_card_extractor import extract_description_capabilities_skills
 
@@ -44,32 +44,7 @@ async def _resolve_agent_card_json(
     return agent_card.model_dump(exclude_none=True, by_alias=True)
 
 
-# ---------------------------------------------------------------------
-# FINAL optimized loader (TYPE-SAFE)
-# ---------------------------------------------------------------------
-async def load_active_agents() -> List[BaseAgent]:
-    """
-    Optimized remote agent loader.
-
-    ✅ Parallel loading with bounded concurrency
-    ✅ Single shared HTTP client
-    ✅ Returns List[BaseAgent] (type-safe)
-    ✅ Safe for 20+ agents
-    """
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AgentRegistry).where(
-                AgentRegistry.is_active.is_(True),
-                AgentRegistry.is_healthy.is_(True),
-            )
-        )
-        rows = result.scalars().all()
-
-    if not rows:
-        logger.info("No active remote agents found.")
-        return []
-
+def _get_shared_httpx() -> httpx.AsyncClient:
     cfg = getattr(a2a_client_factory, "_config", None)
     shared_httpx = getattr(cfg, "httpx_client", None)
 
@@ -81,6 +56,39 @@ async def load_active_agents() -> List[BaseAgent]:
             a2a_client_factory._config = cfg.copy(
                 update={"httpx_client": shared_httpx}
             )
+
+    return shared_httpx
+
+
+# ---------------------------------------------------------------------
+# Row-level fetch — cheap, DB only, no HTTP. Used by both the bulk
+# startup loader and the sync loop's diffing step.
+# ---------------------------------------------------------------------
+async def fetch_active_agent_rows() -> List[AgentRegistry]:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AgentRegistry).where(
+                AgentRegistry.is_active.is_(True),
+                AgentRegistry.is_healthy.is_(True),
+            )
+        )
+        return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------
+# Row -> RemoteServerManager. This is the part that does the network
+# call (agent card fetch) — only call it for rows you actually need
+# to (re)build.
+# ---------------------------------------------------------------------
+async def build_agents_for_rows(
+    rows: List[AgentRegistry],
+    session_manager: Any,
+    shared_httpx: Optional[httpx.AsyncClient] = None,
+) -> List[BaseAgent]:
+    if not rows:
+        return []
+
+    shared_httpx = shared_httpx or _get_shared_httpx()
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_AGENT_LOADS)
     completed = 0
@@ -115,6 +123,7 @@ async def load_active_agents() -> List[BaseAgent]:
                 agent_card=agent_card_url,
                 a2a_client_factory=a2a_client_factory,
                 description=description,
+                session_manager=session_manager,
             )
 
             agent._capabilities = capabilities
@@ -137,17 +146,36 @@ async def load_active_agents() -> List[BaseAgent]:
         return_exceptions=False,
     )
 
-    # ✅ The critical fix: cast to List[BaseAgent]
-    agents: List[BaseAgent] = cast(
+    return cast(
         List[BaseAgent],
         [a for a in results if a is not None],
     )
+
+
+# ---------------------------------------------------------------------
+# FINAL optimized loader — startup path, builds everything.
+# ---------------------------------------------------------------------
+async def load_active_agents(session_manager: Any) -> List[BaseAgent]:
+    """
+    Full bulk load — used once at startup. Fetches + builds every
+    active/healthy agent. The sync loop should NOT call this on every
+    poll; use fetch_active_agent_rows() + build_agents_for_rows() for
+    incremental updates instead.
+    """
+    rows = await fetch_active_agent_rows()
+
+    if not rows:
+        logger.info("No active remote agents found.")
+        return []
+
+    shared_httpx = _get_shared_httpx()
+    agents = await build_agents_for_rows(rows, session_manager, shared_httpx)
 
     logger.info("✅ Finished loading %d remote agents.", len(agents))
     return agents
 
 
-async def build_single_agent(agent_row) -> Optional[BaseAgent]:
+async def build_single_agent(agent_row, session_manager: Any) -> Optional[BaseAgent]:
     import httpx
 
     agent_card_url = f"http://{agent_row.host}:{agent_row.port}/.well-known/agent-card.json"
@@ -171,6 +199,7 @@ async def build_single_agent(agent_row) -> Optional[BaseAgent]:
         agent_card=agent_card_url,
         a2a_client_factory=a2a_client_factory,
         description=description,
+        session_manager=session_manager,
     )
 
     agent._capabilities = capabilities

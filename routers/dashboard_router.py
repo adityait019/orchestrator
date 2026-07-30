@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from dateutil.parser import parse as parse_datetime
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, Query,Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, case, desc, asc, or_
 from sqlalchemy.exc import IntegrityError
@@ -382,6 +382,7 @@ async def get_agent_detail(
 @router.post("/agents", status_code=201)
 async def create_agent(
     payload: AgentCreateRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_admin_token),
 ):
@@ -439,7 +440,8 @@ async def create_agent(
         raise HTTPException(status_code=409, detail="Agent already exists")
 
     try:
-        agent_instance = await build_single_agent(agent)
+        session_manager = request.app.state.session_manager
+        agent_instance = await build_single_agent(agent, session_manager=session_manager)
         existing_names = {a.name for a in root_agent.sub_agents}
 
         if agent_instance and agent.name not in existing_names:
@@ -548,109 +550,6 @@ async def delete_agent(
 # 7. Orchestration Sessions
 # GET /admin/orchestration-sessions
 # -------------------------------------------------------------------
-
-# @router.get("/orchestration-sessions")
-# async def list_orchestration_sessions(
-#     status: Optional[str] = Query(None),
-#     user_id: Optional[str] = Query(None),
-#     session_id: Optional[str] = Query(None),
-#     page: int = Query(1, ge=1),
-#     page_size: int = Query(20, ge=1, le=100),
-#     db: AsyncSession = Depends(get_db),
-#     _: None = Depends(verify_admin_token),
-# ):
-#     page, page_size, offset = get_pagination(page, page_size)
-
-#     filters = []
-
-#     if status:
-#         filters.append(OrchestrationSession.status == status)
-
-#     if user_id:
-#         filters.append(OrchestrationSession.user_id.ilike(f"%{user_id}%"))
-
-#     if session_id:
-#         filters.append(OrchestrationSession.session_id.ilike(f"%{session_id}%"))
-
-#     count_query = select(func.count(OrchestrationSession.id))
-
-#     inv_stats_subq = (
-#         select(
-#             AgentInvocation.orchestration_session_id.label("session_db_id"),
-#             func.count(AgentInvocation.id).label("invocation_count"),
-#             func.coalesce(func.sum(AgentInvocation.total_tokens), 0).label("total_tokens"),
-#         )
-#         .group_by(AgentInvocation.orchestration_session_id)
-#         .subquery()
-#     )
-
-#     artifact_stats_subq = (
-#         select(
-#             AgentInvocation.orchestration_session_id.label("session_db_id"),
-#             func.count(Artifact.id).label("artifact_count"),
-#         )
-#         .join(AgentInvocation, AgentInvocation.id == Artifact.invocation_id)
-#         .group_by(AgentInvocation.orchestration_session_id)
-#         .subquery()
-#     )
-
-#     query = (
-#         select(
-#             OrchestrationSession.id,
-#             OrchestrationSession.session_id,
-#             OrchestrationSession.user_id,
-#             OrchestrationSession.status,
-#             OrchestrationSession.created_at,
-#             OrchestrationSession.completed_at,
-#             func.coalesce(inv_stats_subq.c.invocation_count, 0).label("invocation_count"),
-#             func.coalesce(inv_stats_subq.c.total_tokens, 0).label("total_tokens"),
-#             func.coalesce(artifact_stats_subq.c.artifact_count, 0).label("artifact_count"),
-#         )
-#         .outerjoin(
-#             inv_stats_subq,
-#             inv_stats_subq.c.session_db_id == OrchestrationSession.session_id,
-#         )
-#         .outerjoin(
-#             artifact_stats_subq,
-#             artifact_stats_subq.c.session_db_id == OrchestrationSession.session_id,
-#         )
-#         .order_by(desc(OrchestrationSession.created_at))
-#     )
-
-#     if filters:
-#         count_query = count_query.where(*filters)
-#         query = query.where(*filters)
-
-#     total = (await db.execute(count_query)).scalar_one()
-
-#     result = await db.execute(query.offset(offset).limit(page_size))
-#     rows = result.mappings().all()
-
-#     items = [
-#         {
-#             "id": row["id"],
-#             "session_id": row["session_id"],
-#             "user_id": row["user_id"],
-#             "status": row["status"],
-#             "created_at": row["created_at"],
-#             "completed_at": row["completed_at"],
-#             "invocation_count": row["invocation_count"] or 0,
-#             "artifact_count": row["artifact_count"] or 0,
-#             "total_tokens": row["total_tokens"] or 0,
-#             "duration_seconds": calculate_duration_seconds(
-#                 row["created_at"],
-#                 row["completed_at"],
-#             ),
-#         }
-#         for row in rows
-#     ]
-
-#     return build_paginated_response(items, total, page, page_size)
-
-
-
-
-
 
 @router.get("/orchestration-sessions")
 async def list_orchestration_sessions(

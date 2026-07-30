@@ -85,12 +85,18 @@ BASE_URL = f"http://{os.getenv('ORCH_HOST', '127.0.0.1')}:{os.getenv('ORCH_PORT'
 WS_BASE = f"ws://{os.getenv('ORCH_HOST', '127.0.0.1')}:{os.getenv('ORCH_PORT', 8000)}"
 ADMIN_TOKEN = os.getenv("SECRET_KEY", "super-secret")
 
+
 DEBUG=False
 # Required for the WebSocket handshake. In AUTH_MODE=mock, the shared local
 # .env can provide MOCK_ACCESS_TOKEN (default: dev-token); otherwise supply
 # ORCH_ACCESS_TOKEN accepted by the configured identity service.
+
+USER_ID=os.getenv("USER_ID", "test-user")
+TENANT_ID=os.getenv("TENANT_ID", "test-tenant")
+COUNTRY_CODE=os.getenv("COUNTRY_CODE", "US")
 AUTH_MODE = os.getenv("AUTH_MODE", "external").strip().lower()
 ACCESS_TOKEN = os.getenv("ORCH_ACCESS_TOKEN", "").strip()
+ROLES=os.getenv("ROLES", "user").strip().lower().split(",")
 if not ACCESS_TOKEN and AUTH_MODE == "mock":
     ACCESS_TOKEN = os.getenv("MOCK_ACCESS_TOKEN", "dev-token").strip()
 
@@ -648,6 +654,11 @@ async def chat():
         auth_payload = {
             "type": "auth",
             "access_token": ACCESS_TOKEN,
+            "user_id": USER_ID,
+            "tenant_id": TENANT_ID,
+            "country_code": COUNTRY_CODE,
+            "roles": ROLES
+
         }
         await ws.send(json.dumps(auth_payload))
 

@@ -1,3 +1,4 @@
+#session/session_manager.py
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -6,18 +7,7 @@ from google.adk.sessions.base_session_service import GetSessionConfig
 from typing import Dict, Optional
 import uuid
 import mimetypes
-
-
-
-# In SessionManager
-
-import json
 from google.genai.types import Part
-
-META_TOOL_TOKEN_PREFIX = "[META:TOOL_TOKENS]"
-
-
-
 
 class SessionManager:
     """
@@ -141,39 +131,24 @@ class SessionManager:
         return parts
 
 
-
-    async def attach_tool_tokens(
-        self,
-        parts: list[Part],
-        payload: dict,  # {access_token, refresh_token}
-        session_id:str,
-    ):
+    async def set_tool_context(self, user_id: str, session_id: str, tool_context: dict):
         """
-        TEMPORARY / TESTING ONLY.
-
-        Attaches tool tokens as a META text Part so they reach the remote agent.
-        The agent is responsible for:
-        - extracting
-        - forwarding to the tool
-        - NOT emitting them back as normal text
+        In-memory only — deliberately NOT persisted via append_event.
+        Tokens should never be written to the session DB or replayed
+        into any LLM's context.
         """
+        key = self._key(user_id, session_id)
+        self.active_sessions.setdefault(key, {})
+        self.active_sessions[key]["tool_context"] = tool_context
 
-        if not payload:
-            return parts
+    async def consume_tool_context(self, user_id: str, session_id: str) -> Optional[dict]:
+        key = self._key(user_id, session_id)
+        mirror = self.active_sessions.get(key)
+        if mirror and mirror.get("tool_context"):
+            return mirror.pop("tool_context")   # one-shot, cleared after use
+        return None
+    
 
-        meta_blob = {
-            "type": "tool_credentials",
-            "access_token": payload.get("access_token"),
-            "refresh_token": payload.get("refresh_token"),
-        }
-
-        parts.append(
-            Part(
-                text=f"{META_TOOL_TOKEN_PREFIX} {json.dumps(meta_blob)}"
-            )
-        )
-
-        return parts
     # -----------------------------
     # WebSocket lifecycle
     # -----------------------------

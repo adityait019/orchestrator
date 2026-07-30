@@ -1,3 +1,4 @@
+# websocket/event_normalizer.py
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, List, Dict, Optional
@@ -86,40 +87,6 @@ def extract_files_from_part(part: Any) -> List[str]:
     return files
 
 
-
-def extract_text_from_a2a_message(message: Any) -> Optional[str]:
-    """
-    Extract text from an A2A message dictionary:
-    {
-        "parts": [
-            {"kind": "text", "text": "..."}
-        ]
-    }
-    """
-    if not isinstance(message, dict):
-        return None
-
-    parts = message.get("parts") or []
-
-    chunks: list[str] = []
-
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-
-        text = part.get("text")
-
-        if isinstance(text, str):
-            cleaned = text.strip()
-            if cleaned:
-                chunks.append(cleaned)
-
-    if chunks:
-        return "\n".join(chunks).strip()
-
-    return None
-
-
 def extract_token_usage(event: Any) -> Optional[Dict[str, int]]:
     """Normalize provider/ADK usage metadata into the orchestration format."""
     usage = getattr(event, "usage_metadata", None)
@@ -161,6 +128,39 @@ def extract_token_usage(event: Any) -> Optional[Dict[str, int]]:
         "total_tokens": total_tokens,
     }
 
+
+def extract_text_from_a2a_message(message: Any) -> Optional[str]:
+    """
+    Extract text from an A2A message dictionary:
+    {
+        "parts": [
+            {"kind": "text", "text": "..."}
+        ]
+    }
+    """
+    if not isinstance(message, dict):
+        return None
+
+    parts = message.get("parts") or []
+
+    chunks: list[str] = []
+
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+
+        text = part.get("text")
+
+        if isinstance(text, str):
+            cleaned = text.strip()
+            if cleaned:
+                chunks.append(cleaned)
+
+    if chunks:
+        return "\n".join(chunks).strip()
+
+    return None
+
 # =========================================================
 # ✅ MAIN NORMALIZER (FINAL VERSION)
 # =========================================================
@@ -182,10 +182,6 @@ def normalize_event(event: Any) -> UnifiedEvent:
 
     ue.a2a_task_id = raw_meta.get("a2a:task_id")
     ue.a2a_context_id = raw_meta.get("a2a:context_id")
-
-    # ADK/LiteLLM emits usage on ``event.usage_metadata``. A2A metadata below
-    # remains supported for remote agents and fills in when direct usage is
-    # unavailable.
     token_usage = extract_token_usage(event)
 
     try:
@@ -342,6 +338,15 @@ def normalize_event(event: Any) -> UnifiedEvent:
 
     for part in parts:
 
+        # NOTE: for A2A-sourced events, event.content.parts is built by
+        # RemoteServerManager._build_adk_event, which currently only ever
+        # emits a text Part — it never carries file_data. So this loop
+        # is a no-op for those events today. The functioning path for
+        # received files is the "FILE EXTRACTION" block above, which reads
+        # artifacts/history straight out of the raw a2a:response dump.
+        # Kept here for local/non-A2A events and future-proofing, but if
+        # _build_adk_event is ever changed to include file parts, make
+        # sure this doesn't start double-adding the same file URIs.
         for file_url in extract_files_from_part(part):
             ue.files.append(file_url)
 
@@ -354,7 +359,14 @@ def normalize_event(event: Any) -> UnifiedEvent:
         if text:
             text_chunks.append(text)
 
-    ue.text = ("\n".join(text_chunks).strip() or None)
+    # NOTE: ue.text may already have been populated above from the A2A
+    # response's status.message or history (the primary source for
+    # remote-agent events). event.content.parts is a separate source
+    # (built by _build_adk_event) that usually mirrors it but can be
+    # empty/None even when the A2A-derived text is valid — so this must
+    # only fill in a gap, never blow away a value we already have.
+    content_text = ("\n".join(text_chunks).strip() or None)
+    ue.text = ue.text or content_text
 
     # ✅ remove duplicates
     if ue.files:

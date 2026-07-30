@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from a2a.types import Message, Part, Role, TextPart
+from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
+from google.genai import types as genai_types
 
 from .client_manager import A2AClientManager
 from .models import A2AAdapterEvent
@@ -46,14 +48,16 @@ class A2AAgentAdapter:
         task_id: str | None = None,
         context_id: str | None = None,
         extra_text_parts: list[str] | None = None,
+        extra_genai_parts: list[genai_types.Part] | None = None,
         request_metadata: dict | None = None,
     ) -> AsyncGenerator[A2AAdapterEvent, None]:
 
         client = await self.client_manager.get_client(self.agent_card_url)
 
-        parts: list[Part] = [
-            Part(root=TextPart(text=message))
-        ]
+        parts: list[Part] = []
+
+        if message and message.strip():
+            parts.append(Part(root=TextPart(text=message)))
 
         for extra in extra_text_parts or []:
             if isinstance(extra, str) and extra.strip():
@@ -61,12 +65,38 @@ class A2AAgentAdapter:
                     Part(root=TextPart(text=extra.strip()))
                 )
 
+        # Non-text genai Parts (file_data / inline_data, i.e. uploaded files)
+        # go through ADK's own converter so they come out as proper A2A
+        # FileParts instead of being silently dropped.
+        for genai_part in extra_genai_parts or []:
+            try:
+                converted = convert_genai_part_to_a2a_part(genai_part)
+            except Exception:
+                logger.exception(
+                    "[A2A FILE PART CONVERSION FAILED] agent=%s part=%s",
+                    self.agent_name,
+                    genai_part,
+                )
+                continue
+
+            if converted is None:
+                logger.warning(
+                    "[A2A FILE PART DROPPED] agent=%s part=%s "
+                    "(converter returned None)",
+                    self.agent_name,
+                    genai_part,
+                )
+                continue
+
+            parts.append(converted)
+
         request_message = Message(
             role=Role.user,
             message_id=str(uuid.uuid4()),
             parts=parts,
             context_id=context_id,
             task_id=task_id,
+            metadata=request_metadata,
         )
 
         request_dump = request_message.model_dump(

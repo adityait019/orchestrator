@@ -5,9 +5,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
-# import logging
 import os
-
 from core.runner_factory import create_runner
 from core.config import APP_NAME, DEFAULT_USER
 from routers.agent_registry import router as agent_router
@@ -34,11 +32,9 @@ from services.agent_sync_service import agent_sync_loop
 
 from session.session_manager import SessionManager
 from database.session import AsyncSessionLocal
-from database.engine import IS_LOCAL
 from agent_registry.health_monitor import health_check_loop
 from agents.agent import root_agent
 from state.state_manager import StateManager
-# from adk_database_memory import DatabaseMemoryService
 from memory_management.adk_base_memory.service import DatabaseMemoryService
 
 LOG_FILE = "root_agent.log"
@@ -87,19 +83,12 @@ sync_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI):
     global health_task, sync_task
 
-    if IS_LOCAL:
-        raise RuntimeError(
-            "DBMODE=local only supports the chat-history JSON store. "
-            "Cortex orchestration requires PostgreSQL; set DATABASE_URL and "
-            "DBMODE=postgres (or DBMODE=auto with a reachable database)."
-        )
-
     root_logger.info("🚀 FastAPI startup")
 
     health_task = asyncio.create_task(health_check_loop())
-    sync_task = asyncio.create_task(agent_sync_loop())
+    sync_task = asyncio.create_task(agent_sync_loop(session_manager))
 
-    active_agents = await load_active_agents()
+    active_agents = await load_active_agents(session_manager)
     root_agent.sub_agents = active_agents
     yield
 
@@ -131,12 +120,15 @@ app.include_router(timeseries_matrix_router)
 app.include_router(history_router)
 app.include_router(_swagger_router, include_in_schema=False)  # Swagger UI with access control
 app.mount("/__ctrl__", _orch_panel_app)  # Internal dashboard (no auth for simplicity)
+
+
 # Core services
 session_manager = SessionManager(db_url=os.getenv("DATABASE_URL","not-present"),app_name=APP_NAME)
 state_manager = StateManager(session_manager=session_manager)
 app.state.session_manager=session_manager
 memory_service=DatabaseMemoryService(db_url=os.getenv("DATABASE_URL","not-provided"))
 runner = create_runner(session_manager.session_service,memory_service)
+
 
 file_service = FileService(
     signing_secret=os.getenv("FILE_SIGNING_SECRET", "dev-only-secret"),
@@ -168,4 +160,4 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=os.getenv("ORCH_HOST", "127.0.0.1"), port=int(os.getenv("ORCH_PORT", 8000)))
+    uvicorn.run("main:app", host="192.168.1.11", port=8000)

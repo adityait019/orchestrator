@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 A2A_METADATA_PREFIX = "a2a:"
 
+_session_manager: Any = PrivateAttr(default=None)
 
 class RemoteAgentInfo:
     def __init__(
@@ -69,6 +70,7 @@ class RemoteServerManager(BaseAgent):
         a2a_client_factory: Any | None = None,
         httpx_client: Any | None = None,
         timeout: float = 600.0,
+        session_manager:Any =None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -76,7 +78,7 @@ class RemoteServerManager(BaseAgent):
             description=description,
             **kwargs,
         )
-
+        self._session_manager = session_manager
         resolved_card_url = agent_card_url or agent_card
 
         if not resolved_card_url:
@@ -214,104 +216,113 @@ class RemoteServerManager(BaseAgent):
 
         return task_id, context_id
 
+    def _get_current_transfer_args(self, ctx) -> dict:
+        """
+        Reads transfer_to_agent args only from the current invocation.
 
-    # def _get_remote_message_from_recent_transfer(self, ctx) -> str | None:
-    #     """
-    #     Reads explicit _remote_message from recent transfer_to_agent function_call.
+        This prevents stale _remote_message values from previous HITL transfers
+        being reused for a new user request.
+        """
 
-    #     This is the preferred source of truth:
-    #     - initial HITL approval sends original user task
-    #     - A2A continuation sends latest user reply
-    #     """
+        session = getattr(ctx, "session", None)
+        events = getattr(session, "events", None) or []
 
-    #     session = getattr(ctx, "session", None)
-    #     events = getattr(session, "events", None) or []
+        current_invocation_id = getattr(ctx, "invocation_id", None)
 
-    #     for event in reversed(events):
-    #         content = getattr(event, "content", None)
-    #         parts = getattr(content, "parts", None) if content else None
+        for event in reversed(events[-20:]):
+            event_invocation_id = getattr(event, "invocation_id", None)
 
-    #         if not parts:
-    #             continue
+            # Only trust transfer calls from the current invocation when possible.
+            if (
+                current_invocation_id
+                and event_invocation_id
+                and event_invocation_id != current_invocation_id
+            ):
+                continue
 
-    #         for part in parts:
-    #             fc = getattr(part, "function_call", None)
+            content = getattr(event, "content", None)
+            parts = getattr(content, "parts", None) if content else None
 
-    #             if not fc:
-    #                 continue
+            if not parts:
+                continue
 
-    #             if getattr(fc, "name", None) != "transfer_to_agent":
-    #                 continue
+            for part in parts:
+                fc = getattr(part, "function_call", None)
 
-    #             args = dict(getattr(fc, "args", None) or {})
+                if not fc:
+                    continue
 
-    #             if args.get("agent_name") != self.name:
-    #                 continue
+                if getattr(fc, "name", None) != "transfer_to_agent":
+                    continue
 
-    #             remote_message = args.get("_remote_message")
+                args = dict(getattr(fc, "args", None) or {})
 
-    #             if isinstance(remote_message, str) and remote_message.strip():
-    #                 logger.info(
-    #                     "[A2A REMOTE MESSAGE FROM TRANSFER] agent=%s message=%s",
-    #                     self.name,
-    #                     remote_message[:250],
-    #                 )
-    #                 return remote_message.strip()
+                if args.get("agent_name") != self.name:
+                    continue
 
-    #     return None
+                logger.info(
+                    "[A2A CURRENT TRANSFER ARGS] agent=%s args_keys=%s remote_message=%s",
+                    self.name,
+                    list(args.keys()),
+                    str(args.get("_remote_message", ""))[:250],
+                )
+
+                return args
+
+        return {}
 
     def _get_remote_message_from_recent_transfer(self, ctx) -> str | None:
-            """
-            Reads explicit _remote_message from the current transfer_to_agent function_call only.
+        """
+        Reads explicit _remote_message from the current transfer_to_agent function_call only.
 
-            Avoids stale _remote_message from older HITL transfers.
-            """
+        Avoids stale _remote_message from older HITL transfers.
+        """
 
-            session = getattr(ctx, "session", None)
-            events = getattr(session, "events", None) or []
-            current_invocation_id = getattr(ctx, "invocation_id", None)
+        session = getattr(ctx, "session", None)
+        events = getattr(session, "events", None) or []
+        current_invocation_id = getattr(ctx, "invocation_id", None)
 
-            for event in reversed(events[-20:]):
-                event_invocation_id = getattr(event, "invocation_id", None)
+        for event in reversed(events[-20:]):
+            event_invocation_id = getattr(event, "invocation_id", None)
 
-                if (
-                    current_invocation_id
-                    and event_invocation_id
-                    and event_invocation_id != current_invocation_id
-                ):
+            if (
+                current_invocation_id
+                and event_invocation_id
+                and event_invocation_id != current_invocation_id
+            ):
+                continue
+
+            content = getattr(event, "content", None)
+            parts = getattr(content, "parts", None) if content else None
+
+            if not parts:
+                continue
+
+            for part in parts:
+                fc = getattr(part, "function_call", None)
+
+                if not fc:
                     continue
 
-                content = getattr(event, "content", None)
-                parts = getattr(content, "parts", None) if content else None
-
-                if not parts:
+                if getattr(fc, "name", None) != "transfer_to_agent":
                     continue
 
-                for part in parts:
-                    fc = getattr(part, "function_call", None)
+                args = dict(getattr(fc, "args", None) or {})
 
-                    if not fc:
-                        continue
+                if args.get("agent_name") != self.name:
+                    continue
 
-                    if getattr(fc, "name", None) != "transfer_to_agent":
-                        continue
+                remote_message = args.get("_remote_message")
 
-                    args = dict(getattr(fc, "args", None) or {})
+                if isinstance(remote_message, str) and remote_message.strip():
+                    logger.info(
+                        "[A2A REMOTE MESSAGE FROM CURRENT TRANSFER] agent=%s message=%s",
+                        self.name,
+                        remote_message[:250],
+                    )
+                    return remote_message.strip()
 
-                    if args.get("agent_name") != self.name:
-                        continue
-
-                    remote_message = args.get("_remote_message")
-
-                    if isinstance(remote_message, str) and remote_message.strip():
-                        logger.info(
-                            "[A2A REMOTE MESSAGE FROM CURRENT TRANSFER] agent=%s message=%s",
-                            self.name,
-                            remote_message[:250],
-                        )
-                        return remote_message.strip()
-
-            return None
+        return None
 
 
     def _extract_meta_text_parts(self, ctx) -> list[str]:
@@ -357,6 +368,57 @@ class RemoteServerManager(BaseAgent):
 
         return extras
 
+
+    def _extract_file_parts(self, ctx) -> list[genai_types.Part]:
+        """
+        Extract non-text parts (uploaded files, inline data) from the
+        current user content / latest user session event.
+
+        These carry no `.text`, so `_extract_user_message_and_extra_parts`
+        (which only reads `part.text`) skips right past them. This walks
+        the same source but keeps `file_data` / `inline_data` parts instead
+        of discarding them.
+        """
+
+        user_content = getattr(ctx, "user_content", None)
+
+        if user_content and getattr(user_content, "parts", None):
+            parts = user_content.parts
+        else:
+            session = getattr(ctx, "session", None)
+            events = getattr(session, "events", None) or []
+
+            latest_user_event = None
+
+            for event in reversed(events):
+                if getattr(event, "author", None) == "user":
+                    latest_user_event = event
+                    break
+
+            if (
+                not latest_user_event
+                or not getattr(latest_user_event, "content", None)
+            ):
+                return []
+
+            parts = getattr(latest_user_event.content, "parts", None) or []
+
+        file_parts: list[genai_types.Part] = []
+
+        for part in parts:
+            if getattr(part, "file_data", None) is not None:
+                file_parts.append(part)
+            elif getattr(part, "inline_data", None) is not None:
+                file_parts.append(part)
+
+        if file_parts:
+            logger.info(
+                "[A2A FILE PARTS FOUND] agent=%s count=%s",
+                self.name,
+                len(file_parts),
+            )
+
+        return file_parts
 
     def _is_noise_text(self, text: str) -> bool:
         stripped = (text or "").strip()
@@ -482,8 +544,18 @@ class RemoteServerManager(BaseAgent):
 
     async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:
         user_message, extra_parts = self._extract_user_message_and_extra_parts(ctx)
+        file_parts = self._extract_file_parts(ctx)
 
-        if not user_message:
+        tool_context = {}
+        if self._session_manager is not None:
+            sess_user_id = getattr(ctx.session, "user_id", None)
+            sess_id = getattr(ctx.session, "id", None)
+            if sess_user_id and sess_id:
+                tool_context = await self._session_manager.consume_tool_context(
+                    sess_user_id, sess_id
+                ) or {}
+
+        if not user_message and not file_parts:
             logger.warning(
                 "[A2A EMPTY USER MESSAGE] agent=%s",
                 self.name,
@@ -520,6 +592,9 @@ class RemoteServerManager(BaseAgent):
                 task_id=task_id,
                 context_id=context_id,
                 extra_text_parts=extra_parts,
+                extra_genai_parts=file_parts,
+                request_metadata=tool_context or None,
+
             ):
                 yield self._build_adk_event(parsed, ctx)
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException,Header
+from fastapi import APIRouter, Depends, HTTPException,Header,Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import httpx
@@ -11,8 +11,7 @@ from agent_registry.schemas import AddAgentRequest, AgentResponse
 from agents.agent import root_agent
 from services.agent_loader import build_single_agent
 import logging
-import asyncio
-from services.agent_runtime import agent_runtime_lock
+from services.agent_runtime import agent_runtime_lock as agent_lock
 
 # logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,7 +30,7 @@ async def verify_admin_token(x_admin_token:str = Header(...)):
         raise HTTPException(status_code=403,detail="Unauthorized")
 
 @router.post("/add")
-async def add_agent(payload: AddAgentRequest, db: AsyncSession = Depends(get_db),_:None =Depends(verify_admin_token) ):
+async def add_agent(payload: AddAgentRequest,request:Request, db: AsyncSession = Depends(get_db),_:None =Depends(verify_admin_token) ):
 
 
     agent_card_url = f"http://{payload.host}:{payload.port}/.well-known/agent-card.json"
@@ -95,12 +94,13 @@ async def add_agent(payload: AddAgentRequest, db: AsyncSession = Depends(get_db)
 
     # 🔥 Dynamically load into root agent
     try:
-        agent_instance = await build_single_agent(new_agent)
+        session_manager = request.app.state.session_manager
+        agent_instance = await build_single_agent(new_agent, session_manager=session_manager)
 
         existing_names = {a.name for a in root_agent.sub_agents}
 
         if agent_instance and new_agent.name not in existing_names:
-            async with agent_runtime_lock:
+            async with agent_lock:
                 root_agent.sub_agents.append(agent_instance)
             logger.info(f"✅ Agent {new_agent.name} added dynamically")
         else:
@@ -142,7 +142,7 @@ async def deactivate_agent(
     agent.is_healthy=False
 
     # Remove from root agent
-    async with agent_runtime_lock:
+    async with agent_lock:
         root_agent.sub_agents = [
             a for a in root_agent.sub_agents
             if a.name != agent_name
@@ -158,6 +158,7 @@ async def deactivate_agent(
 @router.patch("/{agent_name}/activate")
 async def activate_agent(
     agent_name:str,
+    request:Request,
     db:AsyncSession =Depends(get_db),
     _: None =Depends(verify_admin_token)
 ):
@@ -176,12 +177,13 @@ async def activate_agent(
     await db.refresh(agent)
 
     try:
-        agent_instance = await build_single_agent(agent)
+        session_manager = request.app.state.session_manager
+        agent_instance = await build_single_agent(agent, session_manager=session_manager)
 
         existing_names = {a.name for a in root_agent.sub_agents}
 
         if agent_instance and agent.name not in existing_names:
-            async with agent_runtime_lock:
+            async with agent_lock:
                 root_agent.sub_agents.append(agent_instance)
             logger.info(f"✅ Agent {agent.name} activated and added to orchestrator")
 
@@ -217,7 +219,7 @@ async def delete_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # Remove from orchestrator (in-memory)
-    async with agent_runtime_lock:
+    async with agent_lock:
         root_agent.sub_agents = [
             a for a in root_agent.sub_agents
             if a.name != agent_name

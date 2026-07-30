@@ -1,9 +1,9 @@
 # services/invocation_context.py
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set
 
-from state.orchestration_state import OrchestrationState 
+from state.orchestration_state import OrchestrationState
 
 
 @dataclass
@@ -20,20 +20,22 @@ class AgentRuntime:
 
     last_emitted_text: Optional[str] = None
 
-    last_hash: Optional[str] = None          # ✅ ADD
-    last_tool_response: Optional[Any] = None  # ✅ ADD
+    last_hash: Optional[str] = None
+    last_tool_response: Optional[Any] = None
+
+    applied_token_usage_keys: Set[tuple] = field(default_factory=set)  # ✅ ADD — dedupes cumulative token_usage snapshots
+    processed_file_urls: Set[str] = field(default_factory=set)   # ✅ ADD
+
     input_artifacts: list = field(default_factory=list)
     output_artifacts: list = field(default_factory=list)
 
     completed: bool = False
-
-
+    
 @dataclass
 class InvocationContext:
     # ✅ runtime tracking
     runtimes: Dict[int, AgentRuntime] = field(default_factory=dict)
     active_invocation_id: Optional[int] = None
-    root_invocation_id: Optional[int] = None
 
     # ✅ orchestration state (MAIN FIX)
     orch_state: Optional[OrchestrationState] = None
