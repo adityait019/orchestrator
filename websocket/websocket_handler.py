@@ -4,12 +4,16 @@ import logging
 import asyncio
 
 from google.genai.types import Content, Part
-from fastapi import WebSocketDisconnect
+from fastapi import WebSocketDisconnect, HTTPException
 
 from websocket.ws_emitter import WSEmitter
 from websocket.event_processor import EventProcessor
 from services.invocation_context import InvocationContext, AgentRuntime
 from services.chat_history_service import chat_history_service
+from services.planning_service import PlanningService
+from services.plan_execution_service import PlanExecutionService
+from agents.agent import root_agent
+from auth.deps import get_current_user_from_token
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,12 @@ class WebSocketHandler:
         self.artifact_service = artifact_service
         self.file_service = file_service
         self.state_manager = state_manager
+        self.planner = PlanningService()
+        self.plan_executor = (
+            PlanExecutionService(agent_service.db, agent_service)
+            if agent_service is not None
+            else None
+        )
 
     async def handle(self, websocket, session_id: str):
 
@@ -61,13 +71,22 @@ class WebSocketHandler:
             await websocket.close(code=4401)
             return
 
-        user_id = frame.get("user_id")
-        tenant_id = frame.get("tenant_id")
-        token = frame.get("access_token")
-        roles = frame.get("roles", [])
+        token = str(frame.get("access_token") or "").strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        try:
+            identity = await get_current_user_from_token(token)
+        except HTTPException:
+            await emitter._safe_send({"type": "auth_failed"})
+            await websocket.close(code=4401)
+            return
+
+        user_id = identity["user_id"]
+        tenant_id = identity["tenant_id"]
+        roles = identity.get("roles", [])
         country_code = frame.get("country_code", "US")
         
-        await emitter._safe_send({"type": "auth_ok"})
+        await emitter._safe_send({"type": "auth_ok", "user_id": user_id, "tenant_id": tenant_id})
         logger.info(
             "WS authenticated: user=%s tenant=%s roles=%s session=%s country=%s",
             user_id, tenant_id, roles, session_id,country_code
@@ -168,6 +187,51 @@ class WebSocketHandler:
                     "continuation": is_continuation,
                     "continued_task": active_task if is_continuation else None,
                 })
+
+                pending_plan = orch_state.plan or {}
+                if pending_plan.get("status") == "awaiting_approval":
+                    answer = prompt.lower().strip()
+                    if answer in {"yes", "y", "approve", "proceed"}:
+                        try:
+                            pending_plan["status"] = "running"
+                            invocation_ctx.root_invocation_id = int(pending_plan["root_invocation_id"])
+                            await self.plan_executor.execute(
+                                plan=pending_plan,
+                                root_invocation_id=invocation_ctx.root_invocation_id,
+                                workflow_id=workflow.session_id,
+                                user_id=user_id,
+                                session_id=session_id,
+                                agents=list(root_agent.sub_agents),
+                                processor=processor,
+                                invocation_ctx=invocation_ctx,
+                                tenant_id=tenant_id,
+                            )
+                            await emitter.bot_message("Plan completed.", agent="Cortex")
+                        except Exception as exc:
+                            logger.exception("[PLAN EXECUTION ERROR]")
+                            pending_plan["status"] = "failed"
+                            pending_plan["error"] = str(exc)
+                            await emitter.bot_message("Plan execution failed. Please try again.", agent="Cortex")
+                        finally:
+                            orch_state.plan = pending_plan
+                            await self.state_manager.save_orchestration_state(user_id, session_id, orch_state)
+                            await emitter.done()
+                        continue
+
+                    if answer in {"no", "n", "cancel"}:
+                        pending_plan["status"] = "cancelled"
+                        orch_state.plan = pending_plan
+                        await self.state_manager.save_orchestration_state(user_id, session_id, orch_state)
+                        await emitter.bot_message("Okay, I cancelled the proposed plan.", agent="Cortex")
+                        await emitter.done()
+                        continue
+
+                    await emitter.bot_message(
+                        "A plan is waiting for approval. Reply 'yes' to execute it or 'no' to cancel.",
+                        agent="Cortex",
+                    )
+                    await emitter.done()
+                    continue
                 
                 logger.info(
                     "[CONTINUATION] %s task=%s",
@@ -217,6 +281,38 @@ class WebSocketHandler:
                 parts = await self.session_manager.attach_last_upload(
                     parts, user_id, session_id
                 )
+
+                uploaded_file_urls = [
+                    part.file_data.file_uri
+                    for part in parts
+                    if getattr(part, "file_data", None) is not None
+                    and getattr(part.file_data, "file_uri", None)
+                ]
+
+                plan = await self.planner.create_plan(
+                    prompt=prompt,
+                    agents=list(root_agent.sub_agents),
+                    uploaded_file_urls=uploaded_file_urls,
+                )
+                if plan:
+                    plan["root_invocation_id"] = root_invocation.id
+                    orch_state.plan = plan
+                    await self.agent_service.complete_invocation(
+                        root_invocation.id,
+                        {"plan": plan},
+                    )
+                    runtime.completed = True
+                    await self.state_manager.save_orchestration_state(user_id, session_id, orch_state)
+                    steps = "\n".join(
+                        f"{index}. {node['agent_name']}: {node['query']}"
+                        for index, node in enumerate(plan["nodes"], start=1)
+                    )
+                    await emitter.bot_message(
+                        f"Proposed plan: {plan['summary']}\n\n{steps}\n\nProceed? (yes/no)",
+                        agent="Cortex",
+                    )
+                    await emitter.done()
+                    continue
 
                 await self.session_manager.set_tool_context(
                     user_id, session_id,

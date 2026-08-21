@@ -24,6 +24,10 @@ class OrchestrationState:
         self.memory: Dict[str, Any] = data.get("memory", {})
 
         self.task: Optional[TaskStateDict] = data.get("task")
+        # Plan state is durable across the approval turn and sequential node
+        # execution. ``task`` remains the compatibility view for an active
+        # remote A2A continuation.
+        self.plan: Optional[Dict[str, Any]] = data.get("plan")
 
     def to_dict(self):
         return {
@@ -33,4 +37,5 @@ class OrchestrationState:
             "artifacts": self.artifacts,
             "memory": self.memory,
             "task": self.task,
+            "plan": self.plan,
         }
