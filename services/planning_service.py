@@ -46,7 +46,7 @@ class PlanningService:
             "uploaded_files": uploaded_file_urls,
             "agent_catalog": self._catalog(agents),
         }
-        instruction = """You are Cortex's planning component. Decide whether this request needs one or more
+        instruction = """You are Nexus's planning component. Decide whether this request needs one or more
 remote agents. Return JSON only, with this exact shape:
 {
   "requires_plan": true|false,

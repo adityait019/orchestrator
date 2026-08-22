@@ -14,6 +14,7 @@ from services.planning_service import PlanningService
 from services.plan_execution_service import PlanExecutionService
 from agents.agent import root_agent
 from auth.deps import get_current_user_from_token
+from services.concurrency import session_execution_coordinator
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,38 @@ class WebSocketHandler:
         self.file_service = file_service
         self.state_manager = state_manager
         self.planner = PlanningService()
-        self.plan_executor = (
+        self.plan_executor: PlanExecutionService | None = (
             PlanExecutionService(agent_service.db, agent_service)
             if agent_service is not None
             else None
         )
+
+    async def _run_runner_turn(self, *, user_id, session_id, user_msg, processor, context):
+        """Serialize ADK mutations for a conversation while allowing other sessions."""
+        async with session_execution_coordinator.turn(user_id, session_id):
+            async for event in self.runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=user_msg,
+            ):
+                try:
+                    await processor.process(event, context)
+                    logger.info("Processed event: %s", event)
+                except Exception as exc:
+                    logger.exception("[STREAM ERROR]: %s", exc)
+                finally:
+                    await asyncio.sleep(0)
+
+    async def _execute_plan_turn(self, *, user_id, session_id, **kwargs):
+        """Plan execution mutates the same conversation state as ADK turns."""
+        if self.plan_executor is None:
+            raise RuntimeError("Plan execution is unavailable because agent services are not configured")
+        async with session_execution_coordinator.turn(user_id, session_id):
+            return await self.plan_executor.execute(
+                user_id=user_id,
+                session_id=session_id,
+                **kwargs,
+            )
 
     async def handle(self, websocket, session_id: str):
 
@@ -195,23 +223,23 @@ class WebSocketHandler:
                         try:
                             pending_plan["status"] = "running"
                             invocation_ctx.root_invocation_id = int(pending_plan["root_invocation_id"])
-                            await self.plan_executor.execute(
+                            await self._execute_plan_turn(
+                                user_id=user_id,
+                                session_id=session_id,
                                 plan=pending_plan,
                                 root_invocation_id=invocation_ctx.root_invocation_id,
                                 workflow_id=workflow.session_id,
-                                user_id=user_id,
-                                session_id=session_id,
                                 agents=list(root_agent.sub_agents),
                                 processor=processor,
                                 invocation_ctx=invocation_ctx,
                                 tenant_id=tenant_id,
                             )
-                            await emitter.bot_message("Plan completed.", agent="Cortex")
+                            await emitter.bot_message("Plan completed.", agent="Nexus")
                         except Exception as exc:
                             logger.exception("[PLAN EXECUTION ERROR]")
                             pending_plan["status"] = "failed"
                             pending_plan["error"] = str(exc)
-                            await emitter.bot_message("Plan execution failed. Please try again.", agent="Cortex")
+                            await emitter.bot_message("Plan execution failed. Please try again.", agent="Nexus")
                         finally:
                             orch_state.plan = pending_plan
                             await self.state_manager.save_orchestration_state(user_id, session_id, orch_state)
@@ -222,13 +250,13 @@ class WebSocketHandler:
                         pending_plan["status"] = "cancelled"
                         orch_state.plan = pending_plan
                         await self.state_manager.save_orchestration_state(user_id, session_id, orch_state)
-                        await emitter.bot_message("Okay, I cancelled the proposed plan.", agent="Cortex")
+                        await emitter.bot_message("Okay, I cancelled the proposed plan.", agent="Nexus")
                         await emitter.done()
                         continue
 
                     await emitter.bot_message(
                         "A plan is waiting for approval. Reply 'yes' to execute it or 'no' to cancel.",
-                        agent="Cortex",
+                        agent="Nexus",
                     )
                     await emitter.done()
                     continue
@@ -250,7 +278,7 @@ class WebSocketHandler:
                 # INITIAL AGENT
                 # =========================
 
-                agent_name = "Cortex"  # default agent
+                agent_name = "Nexus"  # default agent
                 if is_continuation:
                     agent_name = active_task.get("owner")
                     logger.info("Continuing with agent: %s", agent_name)
@@ -309,7 +337,7 @@ class WebSocketHandler:
                     )
                     await emitter.bot_message(
                         f"Proposed plan: {plan['summary']}\n\n{steps}\n\nProceed? (yes/no)",
-                        agent="Cortex",
+                        agent="Nexus",
                     )
                     await emitter.done()
                     continue
@@ -328,19 +356,13 @@ class WebSocketHandler:
                 # RUN AGENT LOOP
                 # =========================
                 try:
-                    async for event in self.runner.run_async(
+                    await self._run_runner_turn(
                         user_id=user_id,
                         session_id=session_id,
-                        new_message=user_msg,
-                    ):
-                        try:
-
-                            await processor.process(event, context)
-                            logger.info("Processed event: %s", event)
-                        except Exception as e:
-                            logger.exception("[STREAM ERROR]: %s", e)
-                        finally:
-                            await asyncio.sleep(0)
+                        user_msg=user_msg,
+                        processor=processor,
+                        context=context,
+                    )
 
                 except Exception:
                     logger.exception("[RUN ERROR]")
@@ -419,6 +441,5 @@ class WebSocketHandler:
             logger.info("Client disconnected")
 
         finally:
-            await self.workflow.complete_workflow(session_id)
             self.session_manager.mark_disconnected(user_id, session_id)
-            logger.info("Cleanup done")
+            logger.info("Connection cleanup done; conversation remains active")

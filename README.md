@@ -1,4 +1,4 @@
-# 🧠 Cortex
+# 🧠 Nexus
 
 <div align="center">
 
@@ -19,19 +19,19 @@
 
 # 📌 Overview
 
-**Cortex** is a capability-driven orchestration platform that discovers, coordinates, and interacts with distributed AI agents using the **A2A (Agent-to-Agent) protocol**.
+**Nexus** is a capability-driven orchestration platform that discovers, coordinates, and interacts with distributed AI agents using the **A2A (Agent-to-Agent) protocol**.
 
-Unlike traditional applications that tightly couple business logic to specific agents, Cortex dynamically discovers remote Agent Cards, builds a capability registry, selects the most appropriate agent for a task, and orchestrates the complete execution lifecycle.
+Unlike traditional applications that tightly couple business logic to specific agents, Nexus dynamically discovers remote Agent Cards, builds a capability registry, selects the most appropriate agent for a task, and orchestrates the complete execution lifecycle.
 
 The platform acts as an orchestration layer between clients and distributed AI agents while providing workflow tracking, Human-in-the-Loop approvals, real-time streaming, and persistent execution metadata.
 
 ---
 
-# 🚀 Why Cortex?
+# 🚀 Why Nexus?
 
 Modern AI systems often require multiple specialized agents.
 
-Instead of hardcoding connections to every agent, Cortex introduces a capability-driven orchestration layer that:
+Instead of hardcoding connections to every agent, Nexus introduces a capability-driven orchestration layer that:
 
 - Dynamically discovers remote A2A-compatible agents
 - Selects agents based on advertised capabilities
@@ -116,7 +116,7 @@ This allows new agents to be added without modifying the orchestrator itself.
                  API Gateway (FastAPI)
                         │
                         ▼
-               Cortex Orchestrator
+               Nexus Orchestrator
                         │
           Load Active Agent Capabilities
                         │
@@ -152,7 +152,7 @@ This allows new agents to be added without modifying the orchestrator itself.
 | Component | Responsibility |
 |------------|----------------|
 | **API Gateway** | REST API, WebSocket endpoints, session routing |
-| **Cortex Orchestrator** | Capability matching, delegation, workflow coordination |
+| **Nexus Orchestrator** | Capability matching, delegation, workflow coordination |
 | **Human-in-the-Loop** | User approval before agent delegation |
 | **Dynamic Agent Registry** | Agent discovery, capability loading, health monitoring |
 | **Agent Invocation Layer** | Session/context mapping and remote invocation |
@@ -164,7 +164,7 @@ This allows new agents to be added without modifying the orchestrator itself.
 
 # 🎯 Design Principles
 
-Cortex is designed around a few architectural principles:
+Nexus is designed around a few architectural principles:
 
 - **Capability-driven routing** instead of hardcoded agent integrations.
 - **Protocol abstraction** through an independent A2A runtime.
@@ -205,7 +205,7 @@ cp .env.example .env
 # Run database migrations
 alembic upgrade head
 
-# Start Cortex
+# Start Nexus
 uvicorn main_v2:app --reload --port 8080
 ```
 
@@ -245,7 +245,7 @@ You: Hi How are you?
 
 Bot:
 
-🤖 Cortex
+🤖 Nexus
 Hello! I'm here and ready to assist you. How can I help you today?
 
 ----------------------------------------------------------------------
@@ -258,7 +258,7 @@ You: Analyze the following legacy JSP/Java code and identify dependencies.IMPORT
 
 Bot:
 
-🤖 Cortex
+🤖 Nexus
 I suggest delegating this task to LegacyApplicationDiscoveryAgent. Do you want me to proceed? (yes/no)
 
 ----------------------------------------------------------------------
@@ -393,7 +393,7 @@ You:
 # 📂 Project Structure
 
 ```
-Cortex
+Nexus
 │
 ├── agents/                  # Root agent & HITL
 ├── routers/                 # REST APIs
@@ -460,7 +460,7 @@ The following features are planned for future releases.
 
 Contributions are welcome.
 
-If you'd like to improve Cortex:
+If you'd like to improve Nexus:
 
 1. Fork the repository.
 2. Create a feature branch.
@@ -487,7 +487,7 @@ git push origin feature/my-feature
 
 # 🧪 Current Status
 
-Cortex is under active development.
+Nexus is under active development.
 
 Current implemented capabilities include:
 
@@ -515,7 +515,7 @@ See the **LICENSE** file for details.
 
 # 🙌 Acknowledgements
 
-Cortex is built using several excellent open-source technologies.
+Nexus is built using several excellent open-source technologies.
 
 - Google ADK
 - FastAPI
@@ -525,4 +525,4 @@ Cortex is built using several excellent open-source technologies.
 - Alembic
 - A2A Protocol
 
-Special thanks to the open-source community for building the tools that make projects like Cortex possible.
+Special thanks to the open-source community for building the tools that make projects like Nexus possible.

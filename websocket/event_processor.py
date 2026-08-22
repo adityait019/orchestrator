@@ -3,6 +3,7 @@ from __future__ import annotations
 from tools.helper_downloads import fetch_remote_file
 from websocket.event_normalizer import normalize_event
 from state.models import RemoteAgentState
+from services.concurrency import external_io_semaphore
 import asyncio
 import logging
 import hashlib
@@ -395,7 +396,8 @@ class EventProcessor:
                 runtime.processed_file_urls.add(file_url)
 
                 try:
-                    file_id, filename, path = await fetch_remote_file(str(file_url))
+                    async with external_io_semaphore:
+                        file_id, filename, path = await fetch_remote_file(str(file_url))
 
                     tenant_id = ctx.get("tenant_id") or runtime.invocation_id
 

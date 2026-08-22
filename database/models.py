@@ -47,26 +47,108 @@ class AgentRegistry(Base):
     __tablename__ = "agents"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    host: Mapped[str] = mapped_column(String, nullable=False)
-    port: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_healthy: Mapped[bool] = mapped_column(Boolean, default=False)
+    # --------------------------------------------------
+    # Stable Identity
+    # --------------------------------------------------
+    agent_id: Mapped[str] = mapped_column(
+        String(255),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
 
-    # ✅ JSONB to match DB
-    agent_card: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    name: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
 
-    # ✅ DB owns timestamp now
-    # created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    host: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
+
+    port: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    # --------------------------------------------------
+    # Metadata from Agent Card
+    # --------------------------------------------------
+    agent_type: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    agent_version: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    # --------------------------------------------------
+    # Runtime State
+    # --------------------------------------------------
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+    )
+
+    is_healthy: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+    )
+
+    failure_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+
+    # --------------------------------------------------
+    # Health Tracking
+    # --------------------------------------------------
+    last_seen: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    last_health_check: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    next_health_check: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # --------------------------------------------------
+    # Agent Card
+    # --------------------------------------------------
+    agent_card: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+    )
+    #---------------------------------------------------
+    # Agent Card Hash (for change detection)
+    #---------------------------------------------------
+    
+    agent_card_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+
+    # --------------------------------------------------
+    # Audit
+    # --------------------------------------------------
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
-    last_health_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 # -------------------------------------------------------------------
 # 2️⃣ Orchestration Session (Top-level workflow)
 # -------------------------------------------------------------------

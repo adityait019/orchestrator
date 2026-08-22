@@ -36,6 +36,9 @@ class InvocationContext:
     # ✅ runtime tracking
     runtimes: Dict[int, AgentRuntime] = field(default_factory=dict)
     active_invocation_id: Optional[int] = None
+    # Root invocation for the current prompt/approved plan. Child agent
+    # invocations link back to this value through parent_invocation_id.
+    root_invocation_id: Optional[int] = None
 
     # ✅ orchestration state (MAIN FIX)
     orch_state: Optional[OrchestrationState] = None

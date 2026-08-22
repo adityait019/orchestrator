@@ -1178,7 +1178,7 @@ You: Hi How are you?
 
 Bot:
 
-🤖 Cortex
+🤖 Nexus
 Hello! I'm here and ready to assist you. How can I help you today?
 
 ----------------------------------------------------------------------
@@ -1191,7 +1191,7 @@ You: Analyze the following legacy JSP/Java code and identify dependencies.IMPORT
 
 Bot:
 
-🤖 Cortex
+🤖 Nexus
 I suggest delegating this task to LegacyApplicationDiscoveryAgent. Do you want me to proceed? (yes/no)
 
 ----------------------------------------------------------------------

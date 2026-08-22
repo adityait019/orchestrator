@@ -4,7 +4,7 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontStyle=1;fontSize=26;" value="&lt;div&gt;Cortex&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Capability-Driven Multi-Agent Orchestration Platform&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;System Architecture&lt;/div&gt;" vertex="1">
+        <mxCell id="title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontStyle=1;fontSize=26;" value="&lt;div&gt;Nexus&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Capability-Driven Multi-Agent Orchestration Platform&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;System Architecture&lt;/div&gt;" vertex="1">
           <mxGeometry height="50" width="1140" x="378" y="74" as="geometry" />
         </mxCell>
         <mxCell id="client" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=15;align=center;" value="&lt;font style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 16px;&quot;&gt;Clients&lt;/font&gt;&lt;br&gt;&lt;br&gt;&lt;/font&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;Web UI&lt;/font&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;CLI&lt;/font&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;REST API&lt;/font&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;font size=&quot;3&quot;&gt;WebSocket&lt;/font&gt;&lt;/span&gt;&lt;/div&gt;" vertex="1">
@@ -43,7 +43,7 @@
         <mxCell id="e3" edge="1" parent="1" source="ws" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" target="services" value="workflow + events">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e5" edge="1" parent="1" source="cortex" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#d6b656;" target="hitl" value="Approval Request">
+        <mxCell id="e5" edge="1" parent="1" source="Nexus" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#d6b656;" target="hitl" value="Approval Request">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e6" edge="1" parent="1" source="hitl" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;" target="shim" value="transfer_to_agent + _remote_message">
@@ -81,7 +81,7 @@
         <mxCell id="services" parent="s5RlBIHzvZ17t-2OtwW9-6" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14;align=left;spacingLeft=12;" value="&lt;b&gt;Core Services&lt;br&gt;&lt;/b&gt;&lt;br&gt;SessionManager&lt;br&gt;StateManager&lt;br&gt;WorkflowService&lt;br&gt;AgentExecutionService&lt;br&gt;ArtifactService&lt;br&gt;FileService&lt;br&gt;ChatHistoryService" vertex="1">
           <mxGeometry height="230" width="300" as="geometry" />
         </mxCell>
-        <mxCell id="e4" edge="1" parent="1" source="services" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;entryX=0.154;entryY=1.028;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0;exitY=0.75;exitDx=0;exitDy=0;" target="cortex" value="runner.run_async()">
+        <mxCell id="e4" edge="1" parent="1" source="services" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;entryX=0.154;entryY=1.028;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0;exitY=0.75;exitDx=0;exitDy=0;" target="Nexus" value="runner.run_async()">
           <mxGeometry relative="1" x="-0.1232" as="geometry">
             <mxPoint as="offset" />
             <Array as="points">
@@ -91,7 +91,7 @@
             <mxPoint x="356.20000000000005" y="585" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="e7" edge="1" parent="1" source="cortex" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" target="shim" value="Agent-Invocation">
+        <mxCell id="e7" edge="1" parent="1" source="Nexus" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" target="shim" value="Agent-Invocation">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="449" y="730" />
@@ -115,7 +115,7 @@
         <mxCell id="s5RlBIHzvZ17t-2OtwW9-1" connectable="0" parent="s5RlBIHzvZ17t-2OtwW9-2" style="group" value="" vertex="1">
           <mxGeometry height="190" width="270" as="geometry" />
         </mxCell>
-        <mxCell id="cortex" parent="s5RlBIHzvZ17t-2OtwW9-1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=14;align=left;spacingLeft=12;" value="&lt;b&gt;Cortex Orchestrator&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;div&gt;&lt;div&gt;LLM Runtime&lt;/div&gt;&lt;div&gt;Agent Routing&lt;/div&gt;&lt;div&gt;Delegation Logic&lt;/div&gt;&lt;div&gt;Execution Coordination&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;" vertex="1">
+        <mxCell id="Nexus" parent="s5RlBIHzvZ17t-2OtwW9-1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=14;align=left;spacingLeft=12;" value="&lt;b&gt;Nexus Orchestrator&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;div&gt;&lt;div&gt;LLM Runtime&lt;/div&gt;&lt;div&gt;Agent Routing&lt;/div&gt;&lt;div&gt;Delegation Logic&lt;/div&gt;&lt;div&gt;Execution Coordination&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;" vertex="1">
           <mxGeometry height="190" width="270" as="geometry" />
         </mxCell>
         <mxCell id="b0NogLuLhjiUQgZOYvnG-6" edge="1" parent="s5RlBIHzvZ17t-2OtwW9-7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=-0.003;entryY=0.185;entryDx=0;entryDy=0;entryPerimeter=0;curved=0;strokeColor=#D6B656;strokeWidth=2;">
@@ -167,7 +167,7 @@
         <mxCell id="l1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=14;" value="1. User prompt&lt;br&gt;&lt;br&gt;WebSocket sends prompt and optional uploaded file references." vertex="1">
           <mxGeometry height="120" width="260" x="75" y="140" as="geometry" />
         </mxCell>
-        <mxCell id="l2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=14;" value="2. Cortex plans&lt;br&gt;&lt;br&gt;Uses dynamic sub-agent metadata from registered agent cards." vertex="1">
+        <mxCell id="l2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=14;" value="2. Nexus plans&lt;br&gt;&lt;br&gt;Uses dynamic sub-agent metadata from registered agent cards." vertex="1">
           <mxGeometry height="120" width="280" x="450" y="140" as="geometry" />
         </mxCell>
         <mxCell id="l3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=14;" value="3. HITL approval&lt;br&gt;&lt;br&gt;after_model_callback intercepts transfer_to_agent and stores pending_transfer." vertex="1">
@@ -253,7 +253,7 @@
         <mxCell id="s3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14;align=left;spacingLeft=12;" value="Workflow Trace Tables&lt;br&gt;&lt;br&gt;orchestration_sessions&lt;br&gt;agent_invocations&lt;br&gt;agent_dependencies&lt;br&gt;agent_events&lt;br&gt;&lt;br&gt;Step order, status, payloads, token usage, timestamps" vertex="1">
           <mxGeometry height="280" width="350" x="1112" y="728" as="geometry" />
         </mxCell>
-        <mxCell id="s4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;align=left;spacingLeft=12;" value="Agent Registry Tables&lt;br&gt;&lt;br&gt;agents&lt;br&gt;- name&lt;br&gt;- host / port&lt;br&gt;- active / healthy&lt;br&gt;- agent_card JSONB&lt;br&gt;- timestamps&lt;br&gt;&lt;br&gt;Loaded into Cortex sub_agents" vertex="1">
+        <mxCell id="s4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;align=left;spacingLeft=12;" value="Agent Registry Tables&lt;br&gt;&lt;br&gt;agents&lt;br&gt;- name&lt;br&gt;- host / port&lt;br&gt;- active / healthy&lt;br&gt;- agent_card JSONB&lt;br&gt;- timestamps&lt;br&gt;&lt;br&gt;Loaded into Nexus sub_agents" vertex="1">
           <mxGeometry height="280" width="320" x="1002" y="258" as="geometry" />
         </mxCell>
         <mxCell id="s5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;align=left;spacingLeft=12;" value="Artifact And File Model&lt;br&gt;&lt;br&gt;artifacts&lt;br&gt;- tenant_id&lt;br&gt;- user_id&lt;br&gt;- session_id&lt;br&gt;- invocation_id&lt;br&gt;- file_id / filename&lt;br&gt;- path / URL&lt;br&gt;- mime_type / file_size&lt;br&gt;&lt;br&gt;upload_folder scoped storage" vertex="1">

@@ -5,6 +5,7 @@ from google.adk.events.event_actions import EventActions
 from google.genai.types import Part, FileData
 from google.adk.sessions.base_session_service import GetSessionConfig
 from typing import Dict, Optional
+import asyncio
 import uuid
 import mimetypes
 from google.genai.types import Part
@@ -22,6 +23,8 @@ class SessionManager:
 
         # Keyed by: f"{user_id}::{session_id}"
         self.active_sessions: Dict[str, Dict] = {}
+        self._session_locks: Dict[str, asyncio.Lock] = {}
+        self._session_locks_guard = asyncio.Lock()
 
     # -----------------------------
     # Internal helpers
@@ -29,6 +32,11 @@ class SessionManager:
 
     def _key(self, user_id: str, session_id: str) -> str:
         return f"{user_id}::{session_id}"
+
+    async def _lock_for(self, user_id: str, session_id: str) -> asyncio.Lock:
+        key = self._key(user_id, session_id)
+        async with self._session_locks_guard:
+            return self._session_locks.setdefault(key, asyncio.Lock())
 
     # -----------------------------
     # Core session helpers
@@ -56,15 +64,17 @@ class SessionManager:
         )
 
     async def ensure_session(self, user_id: str, session_id: str):
-        session = await self.get_session(user_id, session_id)
-        if not session:
-            session = await self.create_session(user_id, session_id)
+        lock = await self._lock_for(user_id, session_id)
+        async with lock:
+            session = await self.get_session(user_id, session_id)
+            if not session:
+                session = await self.create_session(user_id, session_id)
 
-        self.active_sessions.setdefault(
-            self._key(user_id, session_id),
-            {"connected": True, "last_upload": None},
-        )
-        return session
+            self.active_sessions.setdefault(
+                self._key(user_id, session_id),
+                {"connected": True, "last_upload": None},
+            )
+            return session
 
     # -----------------------------
     # Upload tracking

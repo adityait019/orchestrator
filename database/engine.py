@@ -76,7 +76,14 @@ IS_POSTGRES = False
 
 def _build_engine(url: str) -> Optional[AsyncEngine]:
     try:
-        return create_async_engine(url, echo=False, pool_pre_ping=True)
+        return create_async_engine(
+            url,
+            echo=False,
+            pool_pre_ping=True,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
+            pool_timeout=float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30")),
+        )
     except Exception as e:
         logger.warning("[db] create_async_engine failed: %s", e)
         return None

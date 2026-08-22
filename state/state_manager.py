@@ -1,6 +1,7 @@
 # state/state_manager.py
 
 import logging
+import threading
 from typing import Dict
 
 from state.models import RemoteAgentState
@@ -17,6 +18,7 @@ class StateManager:
         # ✅ In-memory cache:
         # (user_id, session_id) -> { scope_key:agent_name : RemoteAgentState }
         self._inmemory_state: Dict[tuple, Dict[str, RemoteAgentState]] = {}
+        self._inmemory_state_lock = threading.RLock()
 
     # =============================
     # ORCHESTRATION STATE ✅ (ADK-backed)
@@ -57,10 +59,10 @@ class StateManager:
         key = f"{state.scope_key}:{state.agent_name}"
         cache_key = (user_id, session_id)
 
-        if cache_key not in self._inmemory_state:
-            self._inmemory_state[cache_key] = {}
-
-        self._inmemory_state[cache_key][key] = state
+        with self._inmemory_state_lock:
+            if cache_key not in self._inmemory_state:
+                self._inmemory_state[cache_key] = {}
+            self._inmemory_state[cache_key][key] = state
 
         logger.info(
             "[STATE CACHE UPDATED] %s -> %s",
@@ -81,8 +83,9 @@ class StateManager:
         key = f"{scope_key}:{agent_name}"
         cache_key = (user_id, session_id)
 
-        store = self._inmemory_state.get(cache_key, {})
-        state = store.get(key)
+        with self._inmemory_state_lock:
+            store = self._inmemory_state.get(cache_key, {})
+            state = store.get(key)
 
         if state:
             return state

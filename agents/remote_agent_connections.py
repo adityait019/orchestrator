@@ -425,7 +425,7 @@ class RemoteServerManager(BaseAgent):
 
         return (
             stripped.startswith("For context:")
-            or stripped.startswith("[Cortex]")
+            or stripped.startswith("[Nexus]")
             or "`transfer_to_agent`" in stripped
             or stripped.startswith("[Tool]")
         )

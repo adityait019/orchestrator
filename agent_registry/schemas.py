@@ -15,3 +15,6 @@ class AgentResponse(BaseModel):
     agent_card: Dict[str, Any]
 
 
+class AgentHeartbeat(BaseModel):
+    agent_id:str
+    version:str |None = None

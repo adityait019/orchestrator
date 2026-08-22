@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Create the Cortex-owned PostgreSQL schema.
+    """Create the Nexus-owned PostgreSQL schema.
 
     Google ADK owns its ``sessions`` and ``events`` tables, so those are
     intentionally not created here even though they have read-only ORM maps.
@@ -153,7 +153,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop Cortex-owned tables in dependency order."""
+    """Drop Nexus-owned tables in dependency order."""
     op.drop_table("chat_messages")
     op.drop_table("artifacts")
     op.drop_table("agent_events")

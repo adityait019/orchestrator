@@ -592,7 +592,9 @@ async def chat_loop(ws, session_id: str):
             elif msg_type == "file_processed":
                 console.print("\n📁 Generated Files:", style="green")
                 for f in data.get("files", []):
-                    console.print(f"- {f}")
+                    filename=f.split("/")[-1].split("?")[0]
+
+                    console.print(f"-[link={f}]{filename}[/link]")
 
             # ✅ DEBUG
             elif msg_type == "debug_meta":

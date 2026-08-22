@@ -4,7 +4,7 @@ from sqlalchemy import select
 import httpx
 import os
 from datetime import datetime,timezone
-
+from agent_registry.schemas import AgentHeartbeat
 from database.session import AsyncSessionLocal
 from database.models import AgentRegistry
 from agent_registry.schemas import AddAgentRequest, AgentResponse
@@ -12,12 +12,33 @@ from agents.agent import root_agent
 from services.agent_loader import build_single_agent
 import logging
 from services.agent_runtime import agent_runtime_lock as agent_lock
-
+from utils.compute_card_hash import compute_agent_card_hash
 # logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/agents", tags=["Agent Registry"])
+
+def extract_agent_metadata(card: dict):
+
+    try:
+        params = (
+            card["capabilities"]
+            ["extensions"][0]
+            ["params"]
+        )
+
+        return {
+            "agent_id": params["agent_id"],
+            "agent_type": params.get("agent_type"),
+            "agent_version": params.get("version"),
+        }
+
+    except (KeyError, IndexError, TypeError):
+        raise ValueError(
+            "Invalid agent card structure"
+        )
+
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -29,87 +50,382 @@ async def verify_admin_token(x_admin_token:str = Header(...)):
     if x_admin_token != MASTER_TOKEN:
         raise HTTPException(status_code=403,detail="Unauthorized")
 
+
+
 @router.post("/add")
-async def add_agent(payload: AddAgentRequest,request:Request, db: AsyncSession = Depends(get_db),_:None =Depends(verify_admin_token) ):
+async def add_agent(
+    payload: AddAgentRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_admin_token),
+):
 
-
-    agent_card_url = f"http://{payload.host}:{payload.port}/.well-known/agent-card.json"
+    agent_card_url = (
+        f"http://{payload.host}:{payload.port}"
+        "/.well-known/agent-card.json"
+    )
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(agent_card_url)
-            agent_card = response.json()
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=400, detail="Agent card endpoint timed out")
-    except httpx.HTTPError:
-        raise HTTPException(status_code=400, detail="Failed to fetch agent card")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid JSON from agent card endpoint")
-    
-    if "name" not in agent_card:
-        raise HTTPException(status_code=400, detail="Agent card must contain a 'name' field")
-    if agent_card["name"] != payload.name:
-        raise HTTPException(status_code=400, detail=f"Agent name in card does not match payload it should be {agent_card['name']}")
+            response.raise_for_status()
 
-    result = await db.execute(select(AgentRegistry).where(AgentRegistry.host==payload.host,AgentRegistry.port==payload.port))
+            agent_card = response.json()
+            card_hash = compute_agent_card_hash(
+                agent_card
+            )
+
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent card endpoint timed out",
+        )
+
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to fetch agent card",
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON from agent card endpoint",
+        )
+
+    # --------------------------------------------------
+    # Validate agent card
+    # --------------------------------------------------
+
+    if "name" not in agent_card:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent card must contain a 'name' field",
+        )
+
+    if agent_card["name"] != payload.name:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Agent name in card does not match payload. "
+                f"Expected '{agent_card['name']}'"
+            ),
+        )
+
+    try:
+        metadata = extract_agent_metadata(agent_card)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )
+
+    agent_id = metadata["agent_id"]
+    agent_type = metadata["agent_type"]
+    agent_version = metadata["agent_version"]
+
+    now = datetime.now(timezone.utc)
+
+    # --------------------------------------------------
+    # Check for endpoint reuse
+    # --------------------------------------------------
+
+    endpoint_result = await db.execute(
+        select(AgentRegistry).where(
+            AgentRegistry.host == payload.host,
+            AgentRegistry.port == payload.port,
+            AgentRegistry.is_active.is_(True),
+        )
+    )
+
+    endpoint_owner = endpoint_result.scalar_one_or_none()
+
+    if (
+        endpoint_owner
+        and endpoint_owner.agent_id != agent_id
+    ):
+        logger.warning(
+            f"Endpoint {payload.host}:{payload.port} "
+            f"reassigned from "
+            f"{endpoint_owner.name} "
+            f"({endpoint_owner.agent_id}) "
+            f"to "
+            f"{payload.name} "
+            f"({agent_id})"
+        )
+
+        endpoint_owner.is_active = False
+        endpoint_owner.is_healthy = False
+
+        async with agent_lock:
+            root_agent.sub_agents = [
+                a
+                for a in root_agent.sub_agents
+                if a.name != endpoint_owner.name
+            ]
+
+    # --------------------------------------------------
+    # Lookup by stable identity
+    # --------------------------------------------------
+
+    result = await db.execute(
+        select(AgentRegistry).where(
+            AgentRegistry.agent_id == agent_id
+        )
+    )
+
     existing = result.scalar_one_or_none()
 
+    # ==================================================
+    # UPDATE EXISTING AGENT
+    # ==================================================
+
     if existing:
-        # TEMPORARY SOLUTION IN FUTURE MAY BE I WILL CHANGE THE LOGIC
+        old_version = existing.agent_version if existing else None
+        old_hash = existing.agent_card_hash
+        old_host = existing.host
+        old_port = existing.port
 
+        version_changed = (
+            old_version is not None and old_version != agent_version
+        )
 
-        now=datetime.now(timezone.utc)
+        card_changed = (
+            old_hash != card_hash
+        )
 
-        temp=existing.name
-        existing.name=payload.name
-        existing.agent_card=agent_card
-        existing.created_at=now
-        existing.last_health_check=now
-        existing.is_active=True
-        existing.is_healthy=True
-    
+        endpoint_changed = (
+            old_host != payload.host
+            or old_port != payload.port
+        )
+        metadata_changed = (
+            version_changed
+            or card_changed
+            or endpoint_changed
+        )
+
+        if version_changed:
+            logger.info(
+                f"🚀 Agent upgraded {existing.name} "
+                f"{old_version} -> {agent_version}"
+            )
+
+        if card_changed:
+            logger.info(
+                f"🔄 Agent card changed for "
+                f"{existing.name}"
+            )
+
+        if endpoint_changed:
+            logger.info(
+                f"🌐 Agent endpoint changed for "
+                f"{existing.name}: "
+                f"{existing.host}:{existing.port} "
+                f"-> "
+                f"{payload.host}:{payload.port}")
+            
+        old_name = existing.name
+
+        existing.name = payload.name
+        existing.host = payload.host
+        existing.port = payload.port
+
+        existing.agent_type = agent_type
+        existing.agent_version = agent_version
+
+        existing.agent_card = agent_card
+
+        existing.is_active = True
+        existing.is_healthy = True
+
+        existing.failure_count = 0
+        existing.last_seen = now
+        existing.last_health_check = now
+        existing.next_health_check = None
+        existing.agent_card_hash = card_hash
 
         await db.commit()
         await db.refresh(existing)
 
-        return {"message": f"⚙️..This Host:- {payload.host} and PORT Number:- {payload.port} was Already Blocked by the AGENT:- {temp} So Updating it using Latest Agent:- {existing.name} "}
+        #-------------------------------
+        # Dynamically rebuild runtime agent if metadata changed
+        #-------------------------------
 
+        if metadata_changed:
 
+            try:
+                session_manager = request.app.state.session_manager
 
-    now=datetime.now(timezone.utc)
+                async with agent_lock:
+                    root_agent.sub_agents = [
+                        a
+                        for a in root_agent.sub_agents
+                        if a.name != old_name
+                    ]
+
+                agent_instance = await build_single_agent(
+                    existing,
+                    session_manager=session_manager,
+                )
+
+                if agent_instance is not None:
+                    async with agent_lock:
+                        root_agent.sub_agents.append(
+                            agent_instance
+                        )
+
+                    logger.info(
+                        f"✅ Agent {existing.name} "
+                        f"runtime rebuilt"
+                    )
+
+                else:
+                    logger.warning(
+                        f"⚠️ Unable to rebuild "
+                        f"{existing.name}"
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Failed to rebuild "
+                    f"{existing.name}: {e}"
+                )
+
+        else:
+            logger.info(
+                f"ℹ️ Agent {existing.name} "
+                f"heartbeat/re-registration received. "
+                f"No metadata changes detected."
+            )
+        return {
+            "message":
+                f"Agent '{existing.name}' updated successfully"
+        }
+
+    # ==================================================
+    # CREATE NEW AGENT
+    # ==================================================
+
     new_agent = AgentRegistry(
+        agent_id=agent_id,
+
         name=payload.name,
+
         host=payload.host,
         port=payload.port,
+
+        agent_type=agent_type,
+        agent_version=agent_version,
+
         is_active=True,
         is_healthy=True,
-        agent_card=agent_card,
-        created_at=now,
+
+        failure_count=0,
+
+        last_seen=now,
         last_health_check=now,
+
+        agent_card=agent_card,
+        agent_card_hash=card_hash,
+        created_at=now,
     )
 
     db.add(new_agent)
+
     await db.commit()
     await db.refresh(new_agent)
 
-    # 🔥 Dynamically load into root agent
+    # ------------------------------------------
+    # Dynamically load runtime agent
+    # ------------------------------------------
+
     try:
         session_manager = request.app.state.session_manager
-        agent_instance = await build_single_agent(new_agent, session_manager=session_manager)
 
-        existing_names = {a.name for a in root_agent.sub_agents}
+        agent_instance = await build_single_agent(
+            new_agent,
+            session_manager=session_manager,
+        )
 
-        if agent_instance and new_agent.name not in existing_names:
+        existing_names = {
+            a.name
+            for a in root_agent.sub_agents
+        }
+
+        if (
+            agent_instance
+            and new_agent.name not in existing_names
+        ):
             async with agent_lock:
-                root_agent.sub_agents.append(agent_instance)
-            logger.info(f"✅ Agent {new_agent.name} added dynamically")
+                root_agent.sub_agents.append(
+                    agent_instance
+                )
+
+            logger.info(
+                f"✅ Agent {new_agent.name} "
+                f"added dynamically"
+            )
+
         else:
-            logger.warning(f"⚠️ Agent {new_agent.name} already exists in runtime")
+            logger.warning(
+                f"⚠️ Agent {new_agent.name} "
+                f"already exists in runtime"
+            )
 
     except Exception as e:
-        logger.warning(f"⚠️ Failed to dynamically attach agent: {e}")
+        logger.warning(
+            f"⚠️ Failed to dynamically attach agent: {e}"
+        )
 
-    return {"message": "Agent registered successfully"}
+    return {
+        "message": "Agent registered successfully"
+    }
+
+#=======================================
+# HEARTBEAT ENDPOINT
+#=======================================
+
+@router.post("/heartbeat")
+async def heartbeat(
+    payload: AgentHeartbeat,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(AgentRegistry).where(
+            AgentRegistry.agent_id == payload.agent_id
+        )
+    )
+
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(
+            404,
+            "Agent not found"
+        )
+    if (
+        payload.version
+        and agent.agent_version
+        and payload.version != agent.agent_version
+    ):
+        logger.warning(
+            f"Version mismatch for {agent.name}: "
+            f"registry={agent.agent_version}, "
+            f"heartbeat={payload.version}"
+        )
+
+
+    now = datetime.now(timezone.utc)
+
+    agent.last_seen = now
+    agent.last_health_check = now
+    agent.is_healthy = True
+
+    agent.failure_count = 0
+    agent.next_health_check = None
+
+    await db.commit()
+
+    return {"status": "ok"}
 
 
 @router.get("/active", response_model=list[AgentResponse])

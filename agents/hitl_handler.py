@@ -332,7 +332,7 @@ def is_active_a2a_input_required_task(ctx) -> tuple[bool, dict]:
 # =====================================================
 async def hitl_after_model_callback(callback_context, llm_response):
     """
-    Cortex decided to transfer.
+    Nexus decided to transfer.
 
     We intercept and ask HITL approval.
 

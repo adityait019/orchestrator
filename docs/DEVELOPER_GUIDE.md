@@ -1,16 +1,16 @@
-# 👨‍💻 Cortex Developer Guide
+# 👨‍💻 Nexus Developer Guide
 
-This guide explains the internal architecture and implementation details of Cortex.
+This guide explains the internal architecture and implementation details of Nexus.
 
-Unlike the README, which focuses on getting started, this guide is intended for contributors and developers who want to understand how Cortex works internally.
+Unlike the README, which focuses on getting started, this guide is intended for contributors and developers who want to understand how Nexus works internally.
 
 ---
 
 
 ## System Overview
-Cortex is a capability-driven orchestration platform responsible for coordinating distributed AI agents.
+Nexus is a capability-driven orchestration platform responsible for coordinating distributed AI agents.
 
-Rather than embedding business logic inside the orchestrator, Cortex dynamically discovers remote A2A-compatible agents through Agent Cards, selects the appropriate capability for a user request, delegates execution, and tracks the workflow lifecycle from start to completion.
+Rather than embedding business logic inside the orchestrator, Nexus dynamically discovers remote A2A-compatible agents through Agent Cards, selects the appropriate capability for a user request, delegates execution, and tracks the workflow lifecycle from start to completion.
 
 
 ## 📂 Project Structure & File Mappings
@@ -32,7 +32,7 @@ Rather than embedding business logic inside the orchestrator, Cortex dynamically
 
 | File                                   | Responsibility                                                                                               |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **agents/agent.py**                    | **Cortex** root agent definition, Azure OpenAI/LiteLLM integration, agent instructions, sub-agent management |
+| **agents/agent.py**                    | **Nexus** root agent definition, Azure OpenAI/LiteLLM integration, agent instructions, sub-agent management |
 | **agents/remote_agent_connections.py** | Remote agent connection utilities for A2A protocol communication                                             |
 | **agents/hitl_handler.py**             | Optional Human-in-the-Loop (HITL) handler for agent decision points                                          |
 
@@ -62,7 +62,7 @@ Rather than embedding business logic inside the orchestrator, Cortex dynamically
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **services/workflow_service.py**        | **Workflow Lifecycle**: creates `OrchestrationSession` per user prompt, tracks status (active/completed/failed), computes workflow completion              |
 | **services/agent_execution_service.py** | **Invocation Tracking**: creates `AgentInvocation` rows per sub-agent call, manages step order, tracks input/output payloads, started/completed timestamps |
-| **services/agent_loader.py**            | Loads active and healthy agents from registry, injects into Cortex                                                                                         |
+| **services/agent_loader.py**            | Loads active and healthy agents from registry, injects into Nexus                                                                                         |
 | **services/agent_sync_service.py**      | Background sync loop for agent status/health updates                                                                                                       |
 | **services/artifact_service.py**        | Manages generated artifacts (files) from agent execution                                                                                                   |
 | **services/file_service.py**            | **Signed URL generation**, HMAC validation, TTL management, artifact access control                                                                        |
@@ -152,12 +152,12 @@ Rather than embedding business logic inside the orchestrator, Cortex dynamically
 3. WorkflowService.start_workflow() → creates OrchestrationSession (UUID)
    ↓
 4. AgentExecutionService.start_root_invocation()
-   → creates AgentInvocation row (Cortex, step_order=1, status=working)
+   → creates AgentInvocation row (Nexus, step_order=1, status=working)
    ↓
 5. Runner.run_async(new_message=Content(text=prompt))
-   → calls Cortex agent with message
+   → calls Nexus agent with message
    ↓
-6. Cortex Decision:
+6. Nexus Decision:
    - Receives active+healthy agents dynamically
    - Routes request to 1+ sub-agents via RemoteServerManager (A2A protocol)
    ↓
@@ -198,8 +198,8 @@ Rather than embedding business logic inside the orchestrator, Cortex dynamically
 - Fields:
   - `id (PK), orchestration_session_id (FK), agent_name, step_order, status, input_payload (JSON), output_payload (JSON), started_at, completed_at`
 - **Step order** increments per workflow (resets on new workflow):
-  - Workflow A: `step_order: 1→Cortex, 2→classification_bot, 3→scoring_agent`
-  - Workflow B: `step_order: 1→Cortex, 2→different_agent`
+  - Workflow A: `step_order: 1→Nexus, 2→classification_bot, 3→scoring_agent`
+  - Workflow B: `step_order: 1→Nexus, 2→different_agent`
 
 **AgentRegistry (Capability & Health)**
 
@@ -210,7 +210,7 @@ Rather than embedding business logic inside the orchestrator, Cortex dynamically
 - Maintained by:
   - Health Monitor background loop (checks `/health` every N seconds)
   - Agent Registry API (add/remove agents)
-  - Only **active + healthy** agents injected into Cortex decision context
+  - Only **active + healthy** agents injected into Nexus decision context
 
 ---
 
@@ -303,10 +303,10 @@ CREATE TABLE agent_invocations (
 1. Client sends WebSocket message with prompt and optionally uploaded files
 2. WebSocketHandler authenticates client via `access_token` through tenant `/auth/me`
 3. WorkflowService creates an OrchestrationSession (workflow UUID)
-4. AgentExecutionService creates root AgentInvocation for Cortex agent (step_order=1)
-5. Runner executes Cortex agent with user's prompt and attaches uploaded files as file_data parts
-6. Cortex dynamically loads active and healthy sub-agents from registry
-7. Cortex routes prompt to sub-agents:
+4. AgentExecutionService creates root AgentInvocation for Nexus agent (step_order=1)
+5. Runner executes Nexus agent with user's prompt and attaches uploaded files as file_data parts
+6. Nexus dynamically loads active and healthy sub-agents from registry
+7. Nexus routes prompt to sub-agents:
      - For each sub-agent, AgentExecutionService creates AgentInvocation with incremented step_order
      - JSON-RPC calls are made to remote agents over A2A protocol
      - Streaming responses handled in real-time
@@ -404,7 +404,7 @@ ORDER BY name;
 
 - **HMAC-signed URLs** with configurable TTL (default: 600 sec)
 - **Expiration** timestamp embedded in signature
-- **No direct file reads** by Cortex (opaque artifact forwarding)
+- **No direct file reads** by Nexus (opaque artifact forwarding)
 - **Secure storage** with access logging
 
 ### Database & Secrets
@@ -764,9 +764,9 @@ Response:
 
 ### Core Principles
 
-- **Cortex forwards artifacts as opaque references** (never reads file content directly)
+- **Nexus forwards artifacts as opaque references** (never reads file content directly)
 - **Step order is per-workflow** and resets on each new workflow UUID
-- **Health monitor updates `is_healthy`** in background; only healthy agents injected into Cortex
+- **Health monitor updates `is_healthy`** in background; only healthy agents injected into Nexus
 - **Conversation context preserved** across prompts via ADK session
 - **File artifacts are immutable** (signed URLs are one-time references)
 
@@ -782,7 +782,7 @@ Response:
 
 - **Workflow fails gracefully**: Update `OrchestrationSession` status to `failed`
 - **Sub-agent timeout**: Create `AgentInvocation` with status `failed`, emit error event
-- **Invalid agent**: Skip from Cortex sub_agents list during health check
+- **Invalid agent**: Skip from Nexus sub_agents list during health check
 - **File expiration**: Signed URL validation + refresh capability
 
 ---
@@ -822,7 +822,7 @@ Response:
 
 | Term                     | Meaning                                            |
 | ------------------------ | -------------------------------------------------- |
-| **Cortex**               | Root agent (LLM-powered orchestrator)              |
+| **Nexus**               | Root agent (LLM-powered orchestrator)              |
 | **OrchestrationSession** | Workflow UUID (execution scope)                    |
 | **AgentInvocation**      | Sub-agent invocation (step in workflow)            |
 | **A2A**                  | Agent-to-Agent protocol (JSON-RPC over HTTP/HTTPS) |
@@ -971,7 +971,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## 🚀 Roadmap
 
-Future improvements planned for Cortex:
+Future improvements planned for Nexus:
 
 - [ ] Multi-agent workflow planning
 - [ ] Planner module

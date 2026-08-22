@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
 import os
+from pathlib import Path
 from core.runner_factory import create_runner
 from core.config import APP_NAME, DEFAULT_USER
 from routers.agent_registry import router as agent_router
@@ -39,32 +40,37 @@ from memory_management.adk_base_memory.service import DatabaseMemoryService
 
 LOG_FILE = "root_agent.log"
 
-if os.name  == "nt":
-    # Avoid Windows file-lock conflicts when uvicorn reload spawns subprocesses.
+
+def configure_logging() -> logging.Logger:
+    """Configure the application file handler exactly once per process.
+
+    ``main.py`` can be imported by Uvicorn after being executed directly.
+    Logging handlers live on the process-wide root logger, so blindly adding a
+    handler at import time writes every record once for each import.
+    """
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    log_path = Path(LOG_FILE).resolve()
+
+    for existing in root_logger.handlers:
+        if isinstance(existing, RotatingFileHandler) and Path(existing.baseFilename).resolve() == log_path:
+            return root_logger
+
     handler = RotatingFileHandler(
-        LOG_FILE,
+        log_path,
         maxBytes=10 * 1024 * 1024,
-        backupCount=0,
+        backupCount=0 if os.name == "nt" else 5,
         encoding="utf-8",
         delay=True,
     )
-else:
-    handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5,
-        encoding="utf-8"
+    handler.setFormatter(
+        logging.Formatter("Nexus:%(asctime)s - %(levelname)s - %(name)s - %(message)s")
     )
+    root_logger.addHandler(handler)
+    return root_logger
 
-formatter = logging.Formatter(
-    "CorteX:%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-)
 
-handler.setFormatter(formatter)
-
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)
-root_logger.addHandler(handler)
+root_logger = configure_logging()
 
 
 # ---------- ✅ FIX 3: Silence noisy libraries ----------
@@ -160,4 +166,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="192.168.1.11", port=8000)
+    # Pass the already-created app so executing ``python main.py`` does not
+    # import this module a second time and duplicate root logging handlers.
+    uvicorn.run(app, host="192.168.1.11", port=8000)

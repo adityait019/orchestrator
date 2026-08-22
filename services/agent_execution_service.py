@@ -72,7 +72,7 @@ class AgentExecutionService:
             workflow_id=workflow_id,
             user_id=user_id,
             session_id=session_id,
-            agent_name="Cortex",
+            agent_name="Nexus",
             prompt=prompt,
             args={},
         )

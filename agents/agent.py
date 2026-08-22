@@ -52,7 +52,7 @@ llm = LiteLlm(model=MODEL,
 
 
 root_agent = LlmAgent(
-    name='Cortex',
+    name='Nexus',
     model=llm,
     description='A central orchestrator that understands user intent and coordinates specialized agents to complete tasks.',
     sub_agents=[],
