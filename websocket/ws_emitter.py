@@ -190,3 +190,21 @@ class WSEmitter:
                 "stage":"done",
                 "ts":ts
             })
+
+    async def waiting_for_input(self, question, *, node_id=None, agent=None, task_id=None):
+        """Notify clients that an A2A plan is paused for user input."""
+        await self._safe_send({
+            "type": "waiting_for_input",
+            "question": question or "Please provide the requested input.",
+            "node_id": node_id,
+            "agent_name": agent,
+            "task_id": task_id,
+        })
+
+    async def plan_completed(self, outputs, nodes=None, total_tokens=0):
+        await self._safe_send({
+            "type": "plan_completed",
+            "outputs": outputs,
+            "nodes": nodes or [],
+            "total_tokens": total_tokens,
+        })

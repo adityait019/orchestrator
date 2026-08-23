@@ -231,6 +231,8 @@ class EventProcessor:
                         else existing_task.get("interaction")
                     ),
                 }
+                if interaction == "request_input" and normalized.text:
+                    ctx["invocation_ctx"].orch_state.task["question"] = normalized.text
 
                 inv_ctx.pending_state_update = True
 
