@@ -369,7 +369,13 @@ async def upload_file(paths: list[str], session_id: str):
                 "session_id": session_id
             }
 
-            headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+            headers = {
+                "Authorization": f"Bearer {ACCESS_TOKEN}",
+                "X-Dev-User-Id": USER_ID,
+                "X-Dev-Tenant-Id": TENANT_ID,
+                "X-Country-Code": COUNTRY_CODE,
+                "X-Dev-Roles": ",".join(ROLES)
+            }
 
             res = await client.post(
                 f"{BASE_URL}/upload/",
@@ -404,7 +410,7 @@ async def upload_file(paths: list[str], session_id: str):
                 for url in result["file_urls"]:
                     console.print(url)
 
-            console.print("\n💡 Files are now attached to your session", style="yellow")
+                console.print("\n💡 Files are now attached to your session", style="yellow")
 
         except Exception as e:
             console.print(f"❌ Upload error: {e}", style="red")

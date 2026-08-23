@@ -13,7 +13,6 @@ from services.chat_history_service import chat_history_service
 from services.planning_service import PlanningService
 from services.plan_execution_service import PlanExecutionService
 from agents.agent import root_agent
-from auth.deps import get_current_user_from_token
 from services.concurrency import session_execution_coordinator
 
 logger = logging.getLogger(__name__)
@@ -94,30 +93,20 @@ class WebSocketHandler:
             await emitter._safe_send({"type": "auth_failed"})
             await websocket.close(code=4401)
             return
-
+        
         if frame.get("type") != "auth":
             await websocket.close(code=4401)
             return
 
-        token = str(frame.get("access_token") or "").strip()
-        if token.lower().startswith("bearer "):
-            token = token[7:].strip()
-        try:
-            identity = await get_current_user_from_token(token)
-        except HTTPException:
-            await emitter._safe_send({"type": "auth_failed"})
-            await websocket.close(code=4401)
-            return
-
-        user_id = identity["user_id"]
-        tenant_id = identity["tenant_id"]
-        roles = identity.get("roles", [])
-        country_code = frame.get("country_code", "US")
+        user_id = frame.get("user_id")
+        tenant_id = frame.get("tenant_id")
+        token = frame.get("access_token")
+        roles = frame.get("roles", [])
         
-        await emitter._safe_send({"type": "auth_ok", "user_id": user_id, "tenant_id": tenant_id})
+        await emitter._safe_send({"type": "auth_ok","user_id": user_id, "tenant_id": tenant_id})
         logger.info(
-            "WS authenticated: user=%s tenant=%s roles=%s session=%s country=%s",
-            user_id, tenant_id, roles, session_id,country_code
+            "WS authenticated: user=%s tenant=%s roles=%s session=%s",
+            user_id, tenant_id, roles, session_id,
         )
         await self.session_manager.ensure_session(user_id, session_id)
         self.session_manager.mark_connected(user_id, session_id)
@@ -344,7 +333,7 @@ class WebSocketHandler:
 
                 await self.session_manager.set_tool_context(
                     user_id, session_id,
-                    {"access_token": token, "user_id": user_id, "role": roles, "country_code": country_code},
+                    {"access_token": token, "user_id": user_id, "role": roles},
                 )
 
                 user_msg = Content(role="user", parts=parts)

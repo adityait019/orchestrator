@@ -234,7 +234,6 @@ ws://localhost:8080/ws/{session_id}
 ---
 ## OUTPUT ON CLI
 ```bash
-(orchestrator) PS C:\Users\adity\project\orchestrator>  uv run .\cli_testing.py
 🔌 Server: connection_established
 ✅ Authentication successful
 🤖 Connected to Orchestrator
