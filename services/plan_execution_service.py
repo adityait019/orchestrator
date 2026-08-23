@@ -57,18 +57,43 @@ class PlanExecutionService:
         processor: Any,
         invocation_ctx: Any,
         tenant_id: str | None,
+        resume_input: str | None = None,
     ) -> dict[str, Any]:
         agent_map = {agent.name: agent for agent in agents}
-        outputs: dict[str, Any] = {}
+        # Keep completed node results in the plan so a later websocket turn can
+        # resume without replaying already-finished agents.
+        outputs: dict[str, Any] = {
+            n["node_id"]: n.get("output")
+            for n in plan.get("nodes", [])
+            if n.get("status") == "completed" and "output" in n
+        }
         parent_by_node: dict[str, int] = {}
         previous_invocation_id = root_invocation_id
 
+        resume_node_id = plan.get("current_node_id")
+        if resume_input is not None and not resume_node_id:
+            resume_node_id = next(
+                (n["node_id"] for n in plan.get("nodes", []) if n.get("status") == "awaiting_input"),
+                None,
+            )
+        if resume_input is not None and not resume_node_id:
+            raise RuntimeError("Plan is awaiting input but has no resumable node")
+
         for node in plan["nodes"]:
+            if node.get("status") == "completed":
+                if node.get("invocation_id"):
+                    parent_by_node[node["node_id"]] = int(node["invocation_id"])
+                    previous_invocation_id = int(node["invocation_id"])
+                continue
+            if resume_input is not None and node["node_id"] != resume_node_id:
+                continue
             agent = agent_map.get(node["agent_name"])
             if not agent:
                 raise RuntimeError(f"Planned agent is no longer available: {node['agent_name']}")
 
             query = self._upstream_text(node, outputs)
+            if resume_input is not None and node["node_id"] == resume_node_id:
+                query = f"{query}\n\nUser response to the requested input:\n{resume_input}"
             input_urls = plan.get("uploaded_file_urls", []) if node.get("use_uploaded_files") else []
             invocation, _ = await self.agent_service.start_invocation(
                 workflow_id=workflow_id,
@@ -79,7 +104,13 @@ class PlanExecutionService:
                 args={"plan_id": plan["plan_id"], "task_node_id": node["node_id"]},
                 plan_id=plan["plan_id"],
                 task_node_id=node["node_id"],
-                parent_invocation_id=previous_invocation_id,
+                # A resumed node is a child of its paused attempt; a fresh node
+                # is linked to the preceding plan node (or the root).
+                parent_invocation_id=(
+                    int(node["invocation_id"])
+                    if resume_input is not None and node.get("invocation_id")
+                    else previous_invocation_id
+                ),
                 input_artifacts=[{"url": url} for url in input_urls],
             )
             for dependency in node.get("depends_on", []):
@@ -102,11 +133,24 @@ class PlanExecutionService:
                 "invocation_ctx": invocation_ctx,
             }
             await processor.emitter.status("plan_node_started", agent=node["agent_name"], node_id=node["node_id"])
-            async for parsed in agent._adapter.stream_message(
-                message=query,
-                extra_genai_parts=self._file_parts(input_urls),
-            ):
+            stream_kwargs = {"message": query, "extra_genai_parts": self._file_parts(input_urls)}
+            task = invocation_ctx.orch_state.task or {}
+            if resume_input is not None and node["node_id"] == resume_node_id and task.get("owner") == node["agent_name"]:
+                if task.get("task_id"):
+                    stream_kwargs["task_id"] = task["task_id"]
+                if task.get("context_id"):
+                    stream_kwargs["context_id"] = task["context_id"]
+            async for parsed in agent._adapter.stream_message(**stream_kwargs):
                 await processor.process(agent._build_adk_event(parsed, adapter_context), event_context)
+
+            task = invocation_ctx.orch_state.task or {}
+            if task.get("interaction") == "request_input" and not runtime.completed:
+                node["status"] = "awaiting_input"
+                node["invocation_id"] = invocation.id
+                node["output"] = runtime.output_payload or runtime.buffer
+                plan["status"] = "awaiting_input"
+                plan["current_node_id"] = node["node_id"]
+                return outputs
 
             if not runtime.completed:
                 await self.agent_service.complete_invocation(
@@ -121,7 +165,10 @@ class PlanExecutionService:
             outputs[node["node_id"]] = runtime.output_payload or runtime.buffer
             parent_by_node[node["node_id"]] = invocation.id
             previous_invocation_id = invocation.id
+            node["invocation_id"] = invocation.id
+            node["output"] = outputs[node["node_id"]]
             node["status"] = "completed"
 
         plan["status"] = "completed"
+        plan.pop("current_node_id", None)
         return outputs

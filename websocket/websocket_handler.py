@@ -206,6 +206,38 @@ class WebSocketHandler:
                 })
 
                 pending_plan = orch_state.plan or {}
+                if pending_plan.get("status") == "awaiting_input":
+                    try:
+                        invocation_ctx.root_invocation_id = int(pending_plan["root_invocation_id"])
+                        await self._execute_plan_turn(
+                            user_id=user_id,
+                            session_id=session_id,
+                            plan=pending_plan,
+                            root_invocation_id=invocation_ctx.root_invocation_id,
+                            workflow_id=workflow.session_id,
+                            agents=list(root_agent.sub_agents),
+                            processor=processor,
+                            invocation_ctx=invocation_ctx,
+                            tenant_id=tenant_id,
+                            resume_input=prompt,
+                        )
+                        if pending_plan.get("status") == "awaiting_input":
+                            await emitter.bot_message(
+                                "The plan needs more input to continue.", agent="Nexus"
+                            )
+                        else:
+                            await emitter.bot_message("Plan completed.", agent="Nexus")
+                    except Exception as exc:
+                        logger.exception("[PLAN RESUME ERROR]")
+                        pending_plan["status"] = "failed"
+                        pending_plan["error"] = str(exc)
+                        await emitter.bot_message("Plan execution failed. Please try again.", agent="Nexus")
+                    finally:
+                        orch_state.plan = pending_plan
+                        await self.state_manager.save_orchestration_state(user_id, session_id, orch_state)
+                        await emitter.done()
+                    continue
+
                 if pending_plan.get("status") == "awaiting_approval":
                     answer = prompt.lower().strip()
                     if answer in {"yes", "y", "approve", "proceed"}:
@@ -223,7 +255,12 @@ class WebSocketHandler:
                                 invocation_ctx=invocation_ctx,
                                 tenant_id=tenant_id,
                             )
-                            await emitter.bot_message("Plan completed.", agent="Nexus")
+                            if pending_plan.get("status") == "awaiting_input":
+                                await emitter.bot_message(
+                                    "The plan needs more input to continue.", agent="Nexus"
+                                )
+                            else:
+                                await emitter.bot_message("Plan completed.", agent="Nexus")
                         except Exception as exc:
                             logger.exception("[PLAN EXECUTION ERROR]")
                             pending_plan["status"] = "failed"
