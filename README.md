@@ -234,159 +234,174 @@ ws://localhost:8080/ws/{session_id}
 ---
 ## OUTPUT ON CLI
 ```bash
+(orchestrator) PS C:\Users\adity\project\orchestrator> uv run -m cli.cli_testing
+
+                                      ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗
+                                      ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝
+                                      ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗
+                                      ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║
+                                      ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║
+                                      ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+
+                                            AI Multi-Agent Orchestration Platform
+
+🔌 Connecting to ws://192.168.1.10:8000/ws/4fca7f9b-a2ac-4053-b3f0-484255e15955
 🔌 Server: connection_established
 ✅ Authentication successful
 🤖 Connected to Orchestrator
-🧠 Session ID: 1bc642ce-ce78-4d3a-bcf7-a4d239aa8483
-Type /help for commands
+🧠 Session ID: 4fca7f9b-a2ac-4053-b3f0-484255e15955
 
-You: Hi How are you?
-
-Bot:
-
-🤖 Nexus
-Hello! I'm here and ready to assist you. How can I help you today?
-
-----------------------------------------------------------------------
+Tip: /help for commands · Ctrl+C to exit
 You: /list
 
 📡 Active Agents:
-- UICouplingAnalysisAgent (10.73.83.83:10101)
-- LegacyApplicationDiscoveryAgent (10.73.83.83:10100)
-You: Analyze the following legacy JSP/Java code and identify dependencies.IMPORTANT:Do the analysis first, but DO NOT finalize immediately.After analysis, ask me for confirmation before producing the final summary.When asking, include:- Extracted classes- Detected tables- APIs- Dependency relationshipsThen ask questions like:- "Do you want me to include RAG knowledge?"- "Should I refine the dependency analysis?"- "Proceed to final summary?"Code:public class UserService {    public List<User> getUsers() {        String sql = "SELECT * FROM USERS";        return fetchUsers(sql);    }}public class OrderService {    public void getOrders() {        String sql = "SELECT * FROM ORDERS";    }}fetch("http://order-api/getOrders")
+• OrderAgent (192.168.1.10:10100)
+• InventoryAgent (192.168.1.10:10101)
+You: Create a new order record for customer ID CUST-90412 with 2 units of item SKU-1001 priced at $25.00 each
 
-Bot:
+Nexus:
 
 🤖 Nexus
-I suggest delegating this task to LegacyApplicationDiscoveryAgent. Do you want me to proceed? (yes/no)
+Proposed plan: Check inventory for SKU-1001, then create a new order record for customer CUST-90412 with 2 units of that
+item.
+
+1. InventoryAgent: {"sku":"SKU-1001","quantity":2}
+2. OrderAgent: {"customer_id":"CUST-90412","line_items":[{"sku":"SKU-1001","quantity":2,"unit_price":25.00}]}
+
+Proceed? (yes/no)
 
 ----------------------------------------------------------------------
 You: yes
 
-Bot:
+Nexus:
+• InventoryAgent → submitted
+🔄 InventoryAgent → working
+🔄 InventoryAgent → working
 
-🚀 Starting agent: LegacyApplicationDiscoveryAgent
-🛠️ transfer_to_agent  (agent: LegacyApplicationDiscoveryAgent)
-🔄 Switching → LegacyApplicationDiscoveryAgent
-✅ transfer_to_agent
+🤖 InventoryAgent
+org.ecommerce.inventory_agent.v1 started processing
+🔄 InventoryAgent → working
+🛠️ check_availability  (agent: InventoryAgent)
+🔄 InventoryAgent → working
+🔄 InventoryAgent → working
 {
-  "result": null
+  "success": false,
+  "error": "SKU-1001 not found"
 }
-• LegacyApplicationDiscoveryAgent → submitted
-🔄 LegacyApplicationDiscoveryAgent → working
-🔄 LegacyApplicationDiscoveryAgent → working
+🔄 InventoryAgent → working
 
-🤖 LegacyApplicationDiscoveryAgent
-org.enterprise.agent.wrb_02.v2 started processing
-🔄 LegacyApplicationDiscoveryAgent → working
-🛠️ extract_entities  (agent: LegacyApplicationDiscoveryAgent)
-🔄 LegacyApplicationDiscoveryAgent → working
-🛠️ extract_entities  (agent: LegacyApplicationDiscoveryAgent)
-🔄 LegacyApplicationDiscoveryAgent → working
-✅ extract_entities
+💰 Token Usage
+┏━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┓
+┃ Agent          ┃ Input ┃ Output ┃ Total ┃
+┡━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━┩
+│ InventoryAgent │ 2557  │ 41     │ 2598  │
+└────────────────┴───────┴────────┴───────┘
+✅ InventoryAgent → completed
+• OrderAgent → submitted
+🔄 OrderAgent → working
+🔄 OrderAgent → working
+
+🤖 OrderAgent
+org.ecommerce.order_agent.v1 started processing
+🔄 OrderAgent → working
 {
-  "classes": [
-    "UserService",
-    "OrderService"
-  ],
-  "tables": [
-    "ORDERS"
-  ],
-  "apis": [
-    "http://order-api/getOrders"
-  ]
+  "success": false,
+  "error": "The SKU 'SKU-1001' is not found in inventory. Please check the SKU and try again."
 }
-🔄 LegacyApplicationDiscoveryAgent → working
-✅ extract_entities
-{
-  "classes": [],
-  "tables": [],
-  "apis": [
-    "http://order-api/getOrders"
-  ]
-}
-🔄 LegacyApplicationDiscoveryAgent → working
-🛠️ analyze_dependencies  (agent: LegacyApplicationDiscoveryAgent)
-🔄 LegacyApplicationDiscoveryAgent → working
-✅ analyze_dependencies
-UserService depends on DB tables: USERS, ORDERS
-OrderService depends on DB tables: USERS, ORDERS
-• LegacyApplicationDiscoveryAgent → input-required
-{
-  "type": "question",
-  "content": "Analysis results:\n- Extracted classes: UserService, OrderService\n- Detected tables: USERS, ORDERS\n- APIs: http://order-api/getOrders\n- Dependency relationships: UserService depends on USERS table, OrderService depends on ORDERS table and both mention these tables in SQL statements; API call to http://order-api/getOrders is present.\n\nDo you want me to include RAG knowledge for further context?\nShould I refine the dependency analysis?\nProceed to final summary?",
-  "questions": [
-    "Include RAG knowledge?",
-    "Refine dependency analysis?",
-    "Proceed to final summary?"
-  ],
-  "interaction": "request_input"
-}
+🔄 OrderAgent → working
+
+💰 Token Usage
+┏━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┓
+┃ Agent      ┃ Input ┃ Output ┃ Total ┃
+┡━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━┩
+│ OrderAgent │ 835   │ 37     │ 872   │
+└────────────┴───────┴────────┴───────┘
+✅ OrderAgent → completed
+
+🤖 Nexus
+Plan completed.
+✅ Plan completed
+Total tokens: 3470
 
 ----------------------------------------------------------------------
-You: do not include rag , just give me final summary
+You: do for SKU-001
 
-Bot:
+Nexus:
 
-🚀 Starting agent: LegacyApplicationDiscoveryAgent
-🛠️ transfer_to_agent  (agent: LegacyApplicationDiscoveryAgent)
-🔄 Switching → LegacyApplicationDiscoveryAgent
-✅ transfer_to_agent
+🤖 Nexus
+Proposed plan: Check SKU-001 inventory availability and create an order if available
+
+1. InventoryAgent: Check availability and stock count for SKU-001
+2. OrderAgent: Create an order record for SKU-001 if inventory is available
+
+Proceed? (yes/no)
+
+----------------------------------------------------------------------
+You: yes
+
+Nexus:
+• InventoryAgent → submitted
+🔄 InventoryAgent → working
+🔄 InventoryAgent → working
+
+🤖 InventoryAgent
+org.ecommerce.inventory_agent.v1 started processing
+🔄 InventoryAgent → working
+🛠️ check_availability  (agent: InventoryAgent)
+🔄 InventoryAgent → working
+🔄 InventoryAgent → working
 {
-  "result": null
+  "success": true,
+  "sku": "SKU-001",
+  "name": "Wireless Headphones",
+  "quantity_available": 50,
+  "price": 79.99,
+  "in_stock": true,
+  "status": "available",
+  "message": "SKU-001 (Wireless Headphones) is available with a stock count of 50 units."
 }
-🔄 LegacyApplicationDiscoveryAgent → working
-🔄 LegacyApplicationDiscoveryAgent → working
-
-🤖 LegacyApplicationDiscoveryAgent
-org.enterprise.agent.wrb_02.v2 started processing
-🔄 LegacyApplicationDiscoveryAgent → working
-🛠️ summarize_findings  (agent: LegacyApplicationDiscoveryAgent)
-🔄 LegacyApplicationDiscoveryAgent → working
-✅ summarize_findings
-
-=== Dependency Report ===
-UserService depends on the USERS table for fetching user data. OrderService depends on the ORDERS table to retrieve order data. The legacy system
-interfaces with an external API at http://order-api/getOrders for order retrieval. These dependencies indicate a clear separation between user and
-order data management, with database tables accessed directly by the respective service classes, and orders also accessed via an external API.
-
-=== Supporting Knowledge (RAG) ===
-
-
-=== Final Insight ===
-This legacy system shows tight coupling between business logic and database layers.
-Recommended: Introduce service abstraction layer before modernization.
-
-🔄 LegacyApplicationDiscoveryAgent → working
-Final summary:
-The legacy JSP/Java system consists of two main service classes: UserService and OrderService. UserService directly accesses the USERS database
-table to fetch user information, while OrderService accesses the ORDERS table. Additionally, OrderService interacts with an external API at
-http://order-api/getOrders to retrieve order data.
-
-This structure reveals a clear division between user and order management with dependencies on respective database tables and external API for
-orders. The current architecture shows tight coupling between the business logic and data access layers, indicating the need for introducing a
-service abstraction layer to facilitate modernization efforts.
-🔄 LegacyApplicationDiscoveryAgent → working
+🔄 InventoryAgent → working
 
 💰 Token Usage
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┓
-┃ Agent                           ┃ Input ┃ Output ┃ Total ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━┩
-│ LegacyApplicationDiscoveryAgent │ 2516  │ 247    │ 2763  │
-└─────────────────────────────────┴───────┴────────┴───────┘
-✅ LegacyApplicationDiscoveryAgent → completed
+┏━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┓
+┃ Agent          ┃ Input ┃ Output ┃ Total ┃
+┡━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━┩
+│ InventoryAgent │ 2579  │ 101    │ 2680  │
+└────────────────┴───────┴────────┴───────┘
+✅ InventoryAgent → completed
+• OrderAgent → submitted
+🔄 OrderAgent → working
+🔄 OrderAgent → working
+
+🤖 OrderAgent
+org.ecommerce.order_agent.v1 started processing
+🔄 OrderAgent → working
+🛠️ create_order_record  (agent: OrderAgent)
+🔄 OrderAgent → working
+🔄 OrderAgent → working
+{
+  "success": true,
+  "order_id": "ORD-3C7E672B",
+  "status": "created",
+  "message": "Order for SKU-001 (Wireless Headphones) has been successfully created with order ID ORD-3C7E672B."
+}
+🔄 OrderAgent → working
 
 💰 Token Usage
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┓
-┃ Agent                           ┃ Input ┃ Output ┃ Total ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━┩
-│ LegacyApplicationDiscoveryAgent │ 5032  │ 494    │ 5526  │
-└─────────────────────────────────┴───────┴────────┴───────┘
+┏━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┓
+┃ Agent      ┃ Input ┃ Output ┃ Total ┃
+┡━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━┩
+│ OrderAgent │ 1914  │ 106    │ 2020  │
+└────────────┴───────┴────────┴───────┘
+✅ OrderAgent → completed
+
+🤖 Nexus
+Plan completed.
+✅ Plan completed
+Total tokens: 4700
 
 ----------------------------------------------------------------------
 You:
-
-
 ```
 
 # 📂 Project Structure

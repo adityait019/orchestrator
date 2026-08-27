@@ -2,7 +2,7 @@
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
-from google.genai.types import Part, FileData
+from google.genai.types import Part, FileData, Content
 from google.adk.sessions.base_session_service import GetSessionConfig
 from typing import Dict, Optional
 import asyncio
@@ -220,3 +220,23 @@ class SessionManager:
             actions=EventActions(state_delta=delta),
             partial=False,
         )
+
+    async def append_conversation_message(
+        self, user_id: str, session_id: str, *, role: str, text: str
+    ) -> None:
+        """Persist a visible chat turn in ADK's session history.
+
+        Plan executions call remote adapters directly (without the ADK
+        Runner), so they must explicitly add their user/assistant messages if
+        the next Nexus turn should be able to recall them.
+        """
+        if not text:
+            return
+        session = await self.ensure_session(user_id, session_id)
+        event = Event(
+            invocation_id=str(uuid.uuid4()),
+            author="user" if role == "user" else "Nexus",
+            content=Content(role=role, parts=[Part(text=str(text))]),
+            partial=False,
+        )
+        await self.session_service.append_event(session, event)

@@ -149,3 +149,5 @@ def render_dashboard(group, live: Live | None = None) -> None:
         render_separator()
         console.print(group)
         render_separator()
+
+

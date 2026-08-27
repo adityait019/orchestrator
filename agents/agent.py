@@ -37,18 +37,28 @@ MANDATORY:
 some times user may ask to do task for the generated response, then transfer the task to that sub-agent for execution.
 """.strip()
 
-DEPLOYMENT_NAME=os.environ["DEPLOYMENT_NAME"]
-AZURE_API_KEY=os.environ['AZURE_API_KEY']
-AZURE_API_BASE=os.environ['AZURE_API_BASE']
-AZURE_API_VERSION=os.environ['AZURE_API_VERSION']
-MODEL=f"azure/{DEPLOYMENT_NAME}"
-llm = LiteLlm(model=MODEL,
-            api_key=AZURE_API_KEY,
-            api_base=AZURE_API_BASE,
-            api_version=AZURE_API_VERSION)
+# DEPLOYMENT_NAME=os.environ["DEPLOYMENT_NAME"]
+# AZURE_API_KEY=os.environ['AZURE_API_KEY']
+# AZURE_API_BASE=os.environ['AZURE_API_BASE']
+# AZURE_API_VERSION=os.environ['AZURE_API_VERSION']
+# MODEL=f"azure/{DEPLOYMENT_NAME}"
+# llm = LiteLlm(model=MODEL,
+#             api_key=AZURE_API_KEY,
+#             api_base=AZURE_API_BASE,
+#             api_version=AZURE_API_VERSION)
+
+## set ENV variables
+NVIDIA_NIM_API_KEY = os.environ["NVIDIA_NIM_API_KEY"] 
+NVIDIA_NIM_API_BASE = os.environ["NVIDIA_NIM_API_BASE"]
+
+model="nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b"
 
 
-
+llm=LiteLlm(
+    model=model,
+    api_key=NVIDIA_NIM_API_KEY,
+    api_base=NVIDIA_NIM_API_BASE
+)
 
 
 root_agent = LlmAgent(

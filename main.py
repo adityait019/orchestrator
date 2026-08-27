@@ -168,4 +168,4 @@ if __name__ == "__main__":
 
     # Pass the already-created app so executing ``python main.py`` does not
     # import this module a second time and duplicate root logging handlers.
-    uvicorn.run(app, host="192.168.1.11", port=8000)
+    uvicorn.run(app, host="192.168.1.10", port=8000)

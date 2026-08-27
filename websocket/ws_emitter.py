@@ -208,3 +208,14 @@ class WSEmitter:
             "nodes": nodes or [],
             "total_tokens": total_tokens,
         })
+
+
+    # =========================================================
+    #  Agent Thoughts
+    # =========================================================
+    async def agent_thoughts(self, agent_name, thoughts):
+        await self._safe_send({
+            "type": "agent_thoughts",
+            "agent_name": agent_name,
+            "thoughts": thoughts,
+        })

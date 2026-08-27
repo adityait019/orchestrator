@@ -78,6 +78,28 @@ class WebSocketHandler:
                 **kwargs,
             )
 
+    async def _save_plan_conversation(self, *, user_id, session_id, prompt, plan, result):
+        """Make direct A2A plan turns visible to Nexus's ADK memory."""
+        try:
+            await self.session_manager.append_conversation_message(
+                user_id, session_id, role="user", text=prompt
+            )
+            if plan.get("status") == "completed":
+                text = "Plan completed.\n" + json.dumps(result or {}, default=str)
+            elif plan.get("status") == "awaiting_approval":
+                text = "Proposed plan: " + str(plan.get("summary") or "")
+            else:
+                node_id = plan.get("current_node_id")
+                node = next((n for n in plan.get("nodes", []) if n.get("node_id") == node_id), {})
+                text = str(node.get("output") or "The plan is waiting for additional input.")
+            await self.session_manager.append_conversation_message(
+                user_id, session_id, role="model", text=text
+            )
+        except Exception:
+            # Chat-history persistence must never terminate an otherwise valid
+            # A2A turn; the durable plan state is saved separately.
+            logger.exception("[PLAN CHAT HISTORY SAVE FAILED]")
+
     async def handle(self, websocket, session_id: str):
 
         await websocket.accept()
@@ -258,6 +280,10 @@ class WebSocketHandler:
                                 pending_plan.get("nodes"),
                                 sum(r.total_tokens or 0 for r in invocation_ctx.runtimes.values()),
                             )
+                        await self._save_plan_conversation(
+                            user_id=user_id, session_id=session_id,
+                            prompt=prompt, plan=pending_plan, result=result,
+                        )
                     except Exception as exc:
                         logger.exception("[PLAN RESUME ERROR]")
                         pending_plan["status"] = "failed"
@@ -302,6 +328,10 @@ class WebSocketHandler:
                                     pending_plan.get("nodes"),
                                     sum(r.total_tokens or 0 for r in invocation_ctx.runtimes.values()),
                                 )
+                            await self._save_plan_conversation(
+                                user_id=user_id, session_id=session_id,
+                                prompt=prompt, plan=pending_plan, result=result,
+                            )
                         except Exception as exc:
                             logger.exception("[PLAN EXECUTION ERROR]")
                             pending_plan["status"] = "failed"
@@ -405,6 +435,13 @@ class WebSocketHandler:
                     await emitter.bot_message(
                         f"Proposed plan: {plan['summary']}\n\n{steps}\n\nProceed? (yes/no)",
                         agent="Nexus",
+                    )
+                    await self._save_plan_conversation(
+                        user_id=user_id,
+                        session_id=session_id,
+                        prompt=prompt,
+                        plan=plan,
+                        result={"summary": plan["summary"], "nodes": plan["nodes"]},
                     )
                     await emitter.done()
                     continue
