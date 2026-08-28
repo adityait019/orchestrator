@@ -101,7 +101,13 @@ class PlanExecutionService:
                 session_id=session_id,
                 agent_name=node["agent_name"],
                 prompt=query,
-                args={"plan_id": plan["plan_id"], "task_node_id": node["node_id"]},
+                args={
+                    "plan_id": plan["plan_id"],
+                    "task_node_id": node["node_id"],
+                    "trace_id": invocation_ctx.trace_id,
+                    "turn_id": invocation_ctx.turn_id,
+                    "parent_span_id": invocation_ctx.active_span_id,
+                },
                 plan_id=plan["plan_id"],
                 task_node_id=node["node_id"],
                 # A resumed node is a child of its paused attempt; a fresh node
@@ -131,6 +137,8 @@ class PlanExecutionService:
                 "prompt": query,
                 "tenant_id": tenant_id,
                 "invocation_ctx": invocation_ctx,
+                "trace_id": invocation_ctx.trace_id,
+                "turn_id": invocation_ctx.turn_id,
             }
             await processor.emitter.status("plan_node_started", agent=node["agent_name"], node_id=node["node_id"])
             stream_kwargs = {"message": query, "extra_genai_parts": self._file_parts(input_urls)}

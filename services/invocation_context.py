@@ -54,3 +54,9 @@ class InvocationContext:
     state_manager: Any = None
 
     pending_state_update: bool = False
+
+    # Correlation identifiers for a complete conversation turn and its graph
+    # of planner, invocation, transfer, and A2A events.
+    trace_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    active_span_id: Optional[str] = None

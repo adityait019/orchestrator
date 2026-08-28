@@ -4,8 +4,6 @@ from google.adk.agents.llm_agent import LlmAgent
 import os
 from google.adk.models.lite_llm import LiteLlm
 import logging
-# from google.adk.planners.built_in_planner import BuiltInPlanner,
-# from google.adk.planners import BasePlanner, BuiltInPlanner, PlanReActPlanner
 from agents.hitl_handler import hitl_after_model_callback,hitl_before_model_callback
 from google.adk.tools.load_memory_tool import load_memory_tool
 from dotenv import load_dotenv
@@ -57,7 +55,7 @@ model="nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b"
 llm=LiteLlm(
     model=model,
     api_key=NVIDIA_NIM_API_KEY,
-    api_base=NVIDIA_NIM_API_BASE
+    api_base=NVIDIA_NIM_API_BASE,
 )
 
 

@@ -141,6 +141,23 @@ class EventProcessor:
 
         normalized = normalize_event(event)
 
+        if hasattr(self.agent_service, "record_event"):
+            try:
+                await self.agent_service.record_event(
+                    runtime.invocation_id,
+                    str(normalized.a2a_state or type(event).__name__),
+                    {
+                        "trace_id": inv_ctx.trace_id,
+                        "turn_id": inv_ctx.turn_id,
+                        "span_id": inv_ctx.active_span_id,
+                        "state": normalized.a2a_state,
+                        "text": normalized.text,
+                        "metadata": normalized.metadata,
+                    },
+                )
+            except Exception:
+                logger.exception("[TRACE EVENT SAVE FAILED]")
+
         # =========================
         # ✅ SAFE METADATA MERGE (FIX)
         # =========================
@@ -479,7 +496,12 @@ class EventProcessor:
                         user_id=ctx["user_id"],
                         agent_name=agent_name,
                         prompt=ctx["prompt"],
-                        args=fn_args,
+                        args={
+                            **fn_args,
+                            "trace_id": inv_ctx.trace_id,
+                            "turn_id": inv_ctx.turn_id,
+                            "parent_span_id": inv_ctx.active_span_id,
+                        },
                     )
 
                     new_runtime = type(runtime)(

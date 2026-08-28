@@ -19,4 +19,6 @@ session.db
 .adk
 a2a-server-builder
 root_agent.log.*
-migrations/*
+migrations
+alembic.ini
+uv.lock

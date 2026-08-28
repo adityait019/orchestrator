@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from sqlalchemy import select
 from database.models import AgentInvocation
+from database.models import AgentEvent
 
 
 def _normalize_payload(value):
@@ -259,3 +260,13 @@ class AgentExecutionService:
                 inv.total_tokens = (inv.total_tokens or 0) + total_tokens
 
                 await db.commit()
+
+    async def record_event(self, invocation_id: int, event_type: str, payload: dict) -> None:
+        """Persist a compact trace event for dashboard/graph inspection."""
+        async with self.db() as db:
+            db.add(AgentEvent(
+                invocation_id=invocation_id,
+                event_type=event_type[:100],
+                payload=json.dumps(payload, default=str),
+            ))
+            await db.commit()

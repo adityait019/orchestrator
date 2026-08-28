@@ -14,6 +14,8 @@ from services.planning_service import PlanningService
 from services.plan_execution_service import PlanExecutionService
 from agents.agent import root_agent
 from services.concurrency import session_execution_coordinator
+from services.context_broker import ContextBroker
+from services.trace_context import TraceContext
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ class WebSocketHandler:
         self.file_service = file_service
         self.state_manager = state_manager
         self.planner = PlanningService()
+        self.context_broker = ContextBroker()
         self.plan_executor: PlanExecutionService | None = (
             PlanExecutionService(agent_service.db, agent_service)
             if agent_service is not None
@@ -155,8 +158,8 @@ class WebSocketHandler:
                     logger.exception("Receive failed: %s", e)
                     continue
 
+                message_type = None
                 try:
-                    message_type = None
                     obj = json.loads(raw)
                     message_type = obj.get("type")
                     prompt = (
@@ -184,6 +187,10 @@ class WebSocketHandler:
                 logger.info("Workflow started: %s", workflow.session_id)
                 invocation_ctx = InvocationContext()
                 invocation_ctx.state_manager = self.state_manager
+                trace = TraceContext()
+                invocation_ctx.trace_id = trace.trace_id
+                invocation_ctx.turn_id = trace.turn_id
+                invocation_ctx.active_span_id = trace.child_span().get("span_id")
 
                 orch_state = await self.state_manager.load_orchestration_state(
                     user_id=user_id,
@@ -385,7 +392,11 @@ class WebSocketHandler:
                     session_id=session_id,
                     agent_name=agent_name,
                     prompt=prompt,
-                    args={},
+                    args={
+                        "trace_id": invocation_ctx.trace_id,
+                        "turn_id": invocation_ctx.turn_id,
+                        "span_id": invocation_ctx.active_span_id,
+                    },
                 )
 
                 logger.info("Started root invocation: %s", root_invocation.id)
@@ -418,6 +429,10 @@ class WebSocketHandler:
                     prompt=prompt,
                     agents=list(root_agent.sub_agents),
                     uploaded_file_urls=uploaded_file_urls,
+                    context=self.context_broker.build_planner_context(
+                        orchestration_state=orch_state,
+                        prompt=prompt,
+                    ),
                 )
                 if plan:
                     plan["root_invocation_id"] = root_invocation.id

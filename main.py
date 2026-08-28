@@ -49,7 +49,7 @@ def configure_logging() -> logging.Logger:
     handler at import time writes every record once for each import.
     """
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
+    root_logger.setLevel(logging.INFO)
     log_path = Path(LOG_FILE).resolve()
 
     for existing in root_logger.handlers:

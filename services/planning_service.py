@@ -32,6 +32,7 @@ class PlanningService:
         prompt: str,
         agents: list[Any],
         uploaded_file_urls: list[str],
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if not agents:
             return None
@@ -45,6 +46,9 @@ class PlanningService:
             "user_request": prompt,
             "uploaded_files": uploaded_file_urls,
             "agent_catalog": self._catalog(agents),
+            # This is a bounded task envelope selected by Nexus, not a raw
+            # transcript. The planner remains stateless.
+            "context": context or {},
         }
         instruction = """You are Nexus's planning component. Decide whether this request needs one or more
 remote agents. Return JSON only, with this exact shape:
@@ -56,7 +60,9 @@ remote agents. Return JSON only, with this exact shape:
     "depends_on": [], "use_uploaded_files": false
   }]
 }
-Use a plan only when a remote agent can materially help. For a plan, make nodes sequential:
+Use a plan only when a remote agent can materially help. Nexus owns the conversation and will
+compose the final user-facing answer; do not ask the planner to summarize the transcript.
+For a plan, make nodes sequential:
 each dependency must refer to an earlier node. Set use_uploaded_files only for nodes that
 actually need the original files. Downstream nodes receive their dependency outputs automatically.
 Never invent agents or include markdown."""
