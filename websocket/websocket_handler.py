@@ -16,6 +16,7 @@ from agents.agent import root_agent
 from services.concurrency import session_execution_coordinator
 from services.context_broker import ContextBroker
 from services.trace_context import TraceContext
+from observability import trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -57,29 +58,37 @@ class WebSocketHandler:
     async def _run_runner_turn(self, *, user_id, session_id, user_msg, processor, context):
         """Serialize ADK mutations for a conversation while allowing other sessions."""
         async with session_execution_coordinator.turn(user_id, session_id):
-            async for event in self.runner.run_async(
-                user_id=user_id,
-                session_id=session_id,
-                new_message=user_msg,
-            ):
-                try:
-                    await processor.process(event, context)
-                    logger.info("Processed event: %s", event)
-                except Exception as exc:
-                    logger.exception("[STREAM ERROR]: %s", exc)
-                finally:
-                    await asyncio.sleep(0)
+            with trace_span("nexus.turn", **{
+                "conversation.id": session_id,
+                "user.id": user_id,
+                "orchestrator.workflow_id": context.get("workflow_id"),
+            }):
+                async for event in self.runner.run_async(
+                    user_id=user_id,
+                    session_id=session_id,
+                    new_message=user_msg,
+                ):
+                    try:
+                        await processor.process(event, context)
+                        logger.info("Processed event: %s", event)
+                    except Exception as exc:
+                        logger.exception("[STREAM ERROR]: %s", exc)
+                    finally:
+                        await asyncio.sleep(0)
 
     async def _execute_plan_turn(self, *, user_id, session_id, **kwargs):
         """Plan execution mutates the same conversation state as ADK turns."""
         if self.plan_executor is None:
             raise RuntimeError("Plan execution is unavailable because agent services are not configured")
         async with session_execution_coordinator.turn(user_id, session_id):
-            return await self.plan_executor.execute(
-                user_id=user_id,
-                session_id=session_id,
-                **kwargs,
-            )
+            with trace_span("orchestrator.plan.execute",
+                            **{"conversation.id": session_id, "user.id": user_id,
+                               "plan.id": kwargs.get("plan", {}).get("plan_id")}):
+                return await self.plan_executor.execute(
+                    user_id=user_id,
+                    session_id=session_id,
+                    **kwargs,
+                )
 
     async def _save_plan_conversation(self, *, user_id, session_id, prompt, plan, result):
         """Make direct A2A plan turns visible to Nexus's ADK memory."""

@@ -9,7 +9,7 @@ from database.session import AsyncSessionLocal
 from database.models import AgentRegistry
 from agent_registry.schemas import AddAgentRequest, AgentResponse
 from agents.agent import root_agent
-from services.agent_loader import build_single_agent
+from services.agent_loader import build_single_agent, fetch_active_agent_rows
 import logging
 from services.agent_runtime import agent_runtime_lock as agent_lock
 from utils.compute_card_hash import compute_agent_card_hash
@@ -430,13 +430,9 @@ async def heartbeat(
 
 @router.get("/active", response_model=list[AgentResponse])
 async def get_active_agents(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(AgentRegistry).where(
-            AgentRegistry.is_active.is_(True),
-            AgentRegistry.is_healthy.is_(True)
-        )
-    )
-    return result.scalars().all()
+    # Use the same name-level deduplication as the startup loader so the API,
+    # CLI, planner, and Nexus all see the same agent catalog.
+    return await fetch_active_agent_rows()
 
 
 @router.delete("/{agent_name}")

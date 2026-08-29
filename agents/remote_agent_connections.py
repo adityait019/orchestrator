@@ -12,6 +12,7 @@ from google.adk.events.event import Event
 from google.genai import types as genai_types
 
 from services.a2a_runtime.adapter import A2AAgentAdapter
+from observability import trace_span
 from services.a2a_runtime.client_manager import A2AClientManager
 
 logger = logging.getLogger(__name__)
@@ -587,16 +588,21 @@ class RemoteServerManager(BaseAgent):
         )
 
         try:
-            async for parsed in self._adapter.stream_message(
-                message=user_message,
-                task_id=task_id,
-                context_id=context_id,
-                extra_text_parts=extra_parts,
-                extra_genai_parts=file_parts,
-                request_metadata=tool_context or None,
-
-            ):
-                yield self._build_adk_event(parsed, ctx)
+            with trace_span("a2a.request", **{
+                "agent.name": self.name,
+                "a2a.task.id": task_id,
+                "a2a.context.id": context_id,
+                "adk.invocation.id": ctx.invocation_id,
+            }):
+                async for parsed in self._adapter.stream_message(
+                    message=user_message,
+                    task_id=task_id,
+                    context_id=context_id,
+                    extra_text_parts=extra_parts,
+                    extra_genai_parts=file_parts,
+                    request_metadata=tool_context or None,
+                ):
+                    yield self._build_adk_event(parsed, ctx)
 
         except Exception as exc:
             logger.exception(

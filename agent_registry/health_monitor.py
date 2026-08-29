@@ -112,10 +112,10 @@ async def health_check_loop():
 
                         except Exception:
 
-                            logger.exception(
-                                "Unexpected health check "
-                                f"error for {agent.name}"
-                            )
+                            # logger.exception(
+                            #     "Unexpected health check "
+                            #     f"error for {agent.name}"
+                            # )
 
                             agent.is_healthy = False
 

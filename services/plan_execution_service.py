@@ -10,6 +10,7 @@ from google.genai.types import FileData, Part
 
 from database.models import AgentDependency
 from services.invocation_context import AgentRuntime
+from observability import trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +149,14 @@ class PlanExecutionService:
                     stream_kwargs["task_id"] = task["task_id"]
                 if task.get("context_id"):
                     stream_kwargs["context_id"] = task["context_id"]
-            async for parsed in agent._adapter.stream_message(**stream_kwargs):
-                await processor.process(agent._build_adk_event(parsed, adapter_context), event_context)
+            with trace_span("a2a.agent.invoke", **{
+                "agent.name": node["agent_name"],
+                "plan.id": plan["plan_id"],
+                "task.node.id": node["node_id"],
+                "invocation.id": str(invocation.id),
+            }):
+                async for parsed in agent._adapter.stream_message(**stream_kwargs):
+                    await processor.process(agent._build_adk_event(parsed, adapter_context), event_context)
 
             task = invocation_ctx.orch_state.task or {}
             if task.get("interaction") == "request_input" and not runtime.completed:

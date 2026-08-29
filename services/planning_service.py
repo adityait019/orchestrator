@@ -68,7 +68,9 @@ actually need the original files. Downstream nodes receive their dependency outp
 Never invent agents or include markdown."""
 
         try:
-            response = await acompletion(
+            # LiteLLM's type stub exposes a stream wrapper even for non-streaming
+            # calls; the configured JSON response is the regular completion shape.
+            response: Any = await acompletion(
                 model=f"azure/{deployment}",
                 api_key=os.getenv("AZURE_API_KEY"),
                 api_base=os.getenv("AZURE_API_BASE"),

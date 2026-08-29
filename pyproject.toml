@@ -23,4 +23,8 @@ dependencies = [
     "asyncpg>=0.30.0",
     "uvicorn[standard]>=0.30.0",
     "websockets>=15.0.1",
+    "opentelemetry-sdk>=1.38.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.38.0",
+    "opentelemetry-instrumentation-fastapi>=0.59b0",
+    "opentelemetry-instrumentation-httpx>=0.59b0",
 ]

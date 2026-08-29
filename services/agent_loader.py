@@ -70,9 +70,27 @@ async def fetch_active_agent_rows() -> List[AgentRegistry]:
             select(AgentRegistry).where(
                 AgentRegistry.is_active.is_(True),
                 AgentRegistry.is_healthy.is_(True),
-            )
+            ).order_by(AgentRegistry.id.desc())
         )
-        return list(result.scalars().all())
+        rows = list(result.scalars().all())
+        # Agent names are the routing keys exposed to ADK. If stale registry
+        # rows exist for the same name, keep the newest row only; loading both
+        # makes Nexus advertise duplicate agents and creates ambiguous routing.
+        unique: dict[str, AgentRegistry] = {}
+        for row in rows:
+            unique.setdefault(row.name, row)
+        duplicates = len(rows) - len(unique)
+        if duplicates:
+            logger.warning("Ignoring %d duplicate active agent registry rows", duplicates)
+        return list(unique.values())
+
+
+def deduplicate_runtime_agents(agents: List[BaseAgent]) -> List[BaseAgent]:
+    """Keep one runtime agent per ADK routing name."""
+    unique: dict[str, BaseAgent] = {}
+    for agent in agents:
+        unique.setdefault(agent.name, agent)
+    return list(unique.values())
 
 
 # ---------------------------------------------------------------------
@@ -146,10 +164,7 @@ async def build_agents_for_rows(
         return_exceptions=False,
     )
 
-    return cast(
-        List[BaseAgent],
-        [a for a in results if a is not None],
-    )
+    return deduplicate_runtime_agents(cast(List[BaseAgent], [a for a in results if a is not None]))
 
 
 # ---------------------------------------------------------------------

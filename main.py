@@ -37,6 +37,7 @@ from agent_registry.health_monitor import health_check_loop
 from agents.agent import root_agent
 from state.state_manager import StateManager
 from memory_management.adk_base_memory.service import DatabaseMemoryService
+from observability import configure_observability, instrument_fastapi_app, shutdown_observability
 
 LOG_FILE = "root_agent.log"
 
@@ -71,6 +72,7 @@ def configure_logging() -> logging.Logger:
 
 
 root_logger = configure_logging()
+configure_observability()
 
 
 # ---------- ✅ FIX 3: Silence noisy libraries ----------
@@ -102,9 +104,11 @@ async def lifespan(app: FastAPI):
     for t in (health_task, sync_task):
         if t:
             t.cancel()
+    shutdown_observability()
 
 
 app = FastAPI(title="Orchestrator Agent API", lifespan=lifespan,docs_url=None, redoc_url=None)
+instrument_fastapi_app(app)
 
 app.add_middleware(
     CORSMiddleware,

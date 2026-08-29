@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from agents.agent import root_agent
-from services.agent_loader import fetch_active_agent_rows, build_agents_for_rows
+from services.agent_loader import fetch_active_agent_rows, build_agents_for_rows, deduplicate_runtime_agents
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ async def agent_sync_loop(session_manager: Any, interval: int = 10):
                     if a.name not in removed
                 ]
                 updated_agents.extend(new_agents)
-                root_agent.sub_agents = updated_agents
+                root_agent.sub_agents = deduplicate_runtime_agents(updated_agents)
 
             if removed:
                 logger.info(f"🗑️ Removed agents: {list(removed)}")
