@@ -62,6 +62,8 @@ This allows new agents to be added without modifying the orchestrator itself.
 - Agent Invocation Tracking
 - Workflow Persistence
 - Artifact Management
+- Plan-first execution with approval, cancellation, and resume
+- Multi-turn A2A `input-required` continuation
 
 ## Communication
 
@@ -78,6 +80,7 @@ This allows new agents to be added without modifying the orchestrator itself.
 - Dynamic Capability Registry
 - Signed File URLs
 - Secure Artifact Forwarding
+- OpenTelemetry tracing with Jaeger-compatible export
 
 ---
 
@@ -101,6 +104,8 @@ This allows new agents to be added without modifying the orchestrator itself.
 ![System Architecture](https://github.com/adityait019/orchestrator/blob/main/docs/architecture-diagram/architecture_diagram.png)
 
 </p>
+
+
 
 ---
 
@@ -146,6 +151,25 @@ This allows new agents to be added without modifying the orchestrator itself.
 ```
 
 ---
+
+## 🧠 Conversation, State, and Memory
+
+Nexus separates conversational memory from execution state:
+
+- **ADK session memory** stores conversation history across turns.
+- **Orchestration state** stores the active task and durable plan.
+- **ContextBroker** gives the planner bounded task context instead of duplicating the full transcript.
+- **AgentInvocation/AgentEvent** records execution steps and streaming events for debugging.
+
+This supports plan approval, A2A questions that pause execution, later `user_response`
+continuation, and cancellation while retaining the same task and conversation context.
+
+## 🔭 Observability
+
+OpenTelemetry spans cover WebSocket turns, plan execution, and remote A2A invocations.
+Configure an OTLP HTTP endpoint (for example, Jaeger's OTLP endpoint) using the
+environment variables documented in `observability/README.md`. Each user turn gets
+its own span so long-lived WebSocket connections remain readable in Jaeger.
 
 # 🧩 Core Components
 
@@ -206,7 +230,7 @@ cp .env.example .env
 alembic upgrade head
 
 # Start Nexus
-uvicorn main_v2:app --reload --port 8080
+uvicorn main:app --reload --port 8000
 ```
 
 ---
@@ -409,12 +433,14 @@ You:
 ```
 Nexus
 │
-├── agents/                  # Root agent & HITL
+├── agents/                  # Root agent, HITL and remote A2A connections
 ├── routers/                 # REST APIs
 ├── services/                # Business logic
 ├── websocket/               # Real-time communication
 ├── state/                   # Workflow state
 ├── session/                 # Session management
+├── observability/           # OpenTelemetry/Jaeger tracing
+├── memory_management/       # ADK-backed conversation memory
 ├── database/                # ORM & persistence
 ├── infrastructure/          # A2A factories
 ├── developer_resource/      # Architecture diagrams
@@ -433,7 +459,7 @@ Detailed folder responsibilities and execution flow are documented in **docs/DEV
 | Document | Description |
 |----------|-------------|
 | **README.md** | Project overview and quick start |
-| **docs/DEVELOPER_GUIDE.md** | Internal architecture, execution flow, tracing and implementation details |
+| **docs/DEVELOPER_GUIDE.md** | Internal architecture, state ownership, execution flow, tracing and implementation details |
 | **docs/** | Architecture diagrams, sequence diagrams and design resources |
 
 ---
@@ -444,21 +470,22 @@ The following features are planned for future releases.
 
 ## Workflow Planning
 
-- [ ] Planner Module
-- [ ] Multi-Agent Workflow Planning
-- [ ] Dependency-aware Execution
+- [x] Planner module
+- [x] Multi-agent workflow planning
+- [x] Dependency-aware sequential execution
+- [ ] Dynamic replanning
 
 ## Execution Engine
 
 - [ ] Parallel Agent Execution
 - [ ] Retry Policies
-- [ ] Workflow Resume
-- [ ] Dynamic Replanning
+- [x] Workflow resume after A2A `input-required`
+- [ ] Retry and recovery policies
 
 ## Observability
 
 - [ ] Workflow Replay
-- [ ] Distributed Tracing
+- [x] OpenTelemetry distributed tracing
 - [ ] Execution Timeline UI
 
 ## Platform
@@ -516,6 +543,14 @@ Current implemented capabilities include:
 - ✅ Artifact Management
 - ✅ File Forwarding
 - ✅ Health Monitoring
+- ✅ Plan approval, cancellation, and resume
+- ✅ A2A input-required multi-turn continuation
+- ✅ Durable task/plan state and bounded planner context
+- ✅ Agent dependency and event trace persistence
+- ✅ OpenTelemetry spans with Jaeger-compatible export
+
+Authentication is currently configured for development/mock testing. Production
+authentication and external identity validation will be added separately.
 
 ---
 

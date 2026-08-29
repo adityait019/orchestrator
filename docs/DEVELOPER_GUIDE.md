@@ -19,7 +19,7 @@ Rather than embedding business logic inside the orchestrator, Nexus dynamically 
 
 | File           | Responsibility                                                                                                                                               |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **main_v2.py** | FastAPI app initialization, middleware setup (CORS), router registration, lifespan management (startup/shutdown), WebSocket endpoint, service initialization |
+| **main.py** | FastAPI app initialization, observability setup, router registration, lifespan management, and WebSocket service initialization |
 
 ### Core Configuration
 
@@ -128,7 +128,11 @@ Rather than embedding business logic inside the orchestrator, Nexus dynamically 
 | ------------------ | ------------------------------------------------------------------------------- |
 | **.env**           | Environment variables (see [Configuration](#-configuration))                    |
 | **pyproject.toml** | Project metadata, dependencies (FastAPI, SQLAlchemy, Google ADK, LiteLLM, etc.) |
-| **main.py**        | Alternative entry point (legacy)                                                |
+| **observability/setup.py** | OpenTelemetry provider, OTLP/Jaeger export, and optional HTTP/FastAPI instrumentation |
+| **observability/tracing.py** | Span helpers and semantic attributes for orchestration and A2A calls |
+| **services/context_broker.py** | Builds bounded planner context from active task, plan, and completed node outputs |
+| **services/planning_service.py** | Creates dependency-aware plans from the user prompt and registered capabilities |
+| **services/plan_execution_service.py** | Executes approved plans and resumes nodes awaiting A2A input |
 
 ### Testing & Development Tools
 
@@ -168,12 +172,14 @@ Rather than embedding business logic inside the orchestrator, Nexus dynamically 
    ↓
 8. Status Updates:
    - EventProcessor → WSEmitter → WebSocket client
-   - Types: status, invocation_started, tool_progress, artifact, invocation_completed
+   - Types: status, plan, waiting_for_input, invocation_started, tool_progress, artifact, invocation_completed
    ↓
 9. WorkflowService.complete_workflow()
    → marks OrchestrationSession as completed
    ↓
-10. Session Preserved for next prompt (ADK session_id keeps context)
+10. Session preserved for the next prompt (ADK session_id keeps conversation context)
+11. If an A2A agent returns `input-required`, persist `orchestrator.task` and resume later
+    with the same `task_id` and `context_id` after a `user_response` message.
 ```
 
 ---
@@ -282,12 +288,15 @@ CREATE TABLE agent_invocations (
 );
 ```
 
-### Future‑Ready Tables (Planned)
+### Implemented Trace Tables
 
-- `agent_dependencies` (DAG execution ordering)
+- `agent_dependencies` (plan/dependency relationships)
 - `agent_events` (streaming trace logging)
 - `artifacts` (generated file persistence)
-- `workflow_events` (workflow-level event log)
+- `chat_messages` and ADK session/event tables (conversation memory)
+
+The durable orchestration state also stores the active `task` and `plan` payload for
+input-required continuation and plan approval.
 
 **Timestamps**: All use `TIMESTAMP WITH TIME ZONE` (UTC‑safe).
 
@@ -301,7 +310,8 @@ CREATE TABLE agent_invocations (
 
 ```
 1. Client sends WebSocket message with prompt and optionally uploaded files
-2. WebSocketHandler authenticates client via `access_token` through tenant `/auth/me`
+2. WebSocketHandler accepts the development/mock authentication frame. External identity
+   validation is intentionally deferred and must be added before production deployment.
 3. WorkflowService creates an OrchestrationSession (workflow UUID)
 4. AgentExecutionService creates root AgentInvocation for Nexus agent (step_order=1)
 5. Runner executes Nexus agent with user's prompt and attaches uploaded files as file_data parts
@@ -318,7 +328,8 @@ CREATE TABLE agent_invocations (
      - WebSocket client is notified with artifact events including download links
 9. Status Updates and tool progress streamed to the frontend via WSEmitter
 10. WorkflowService marks orchestration workflow completed upon finish
-11. ADK sessions keep conversation context for future messages
+11. ADK sessions keep conversation context for future messages; ContextBroker supplies
+    only bounded task context to the planner.
 ```
 
 ---
@@ -598,7 +609,7 @@ cp .env.example .env
 alembic upgrade head
 
 # 6. Run dev server with auto-reload
-uvicorn main_v2:app --reload --port 8080
+uvicorn main:app --reload --port 8000
 ```
 
 ### Access Points
@@ -850,7 +861,7 @@ alembic upgrade head         # Apply pending migrations
 alembic downgrade -1         # Rollback last migration
 
 # Development server
-uvicorn main_v2:app --reload --port 8080
+uvicorn main:app --reload --port 8000
 
 
 
@@ -971,12 +982,17 @@ MIT — see [LICENSE](LICENSE).
 
 ## 🚀 Roadmap
 
-Future improvements planned for Nexus:
+Current implementation includes:
 
-- [ ] Multi-agent workflow planning
-- [ ] Planner module
-- [ ] DAG-based execution engine
-- [ ] Parallel agent execution
+- [x] Multi-agent workflow planning
+- [x] Planner module and dependency-aware execution
+- [x] Durable plan approval and A2A input-required resume
+- [x] OpenTelemetry tracing and AgentEvent persistence
+
+Remaining improvements:
+
+- [ ] Parallel execution where dependencies allow it
 - [ ] Retry and recovery policies
 - [ ] Dynamic workflow replanning
 - [ ] Capability-based scheduling
+- [ ] Trace/timeline UI and production authentication
