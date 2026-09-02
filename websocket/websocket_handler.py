@@ -2,6 +2,7 @@
 import json
 import logging
 import asyncio
+import re
 
 from google.genai.types import Content, Part
 from fastapi import WebSocketDisconnect, HTTPException
@@ -37,6 +38,31 @@ INPUT_REQUIRED_STATES = {
     "input_required",
     "inputrequired",
 }
+
+
+def _format_input_question(value) -> str:
+    """Return the actionable question from an agent's input payload."""
+    if isinstance(value, dict):
+        return str(value.get("message") or value.get("question") or value)
+    if isinstance(value, str):
+        try:
+            payload = json.loads(value)
+        except (TypeError, ValueError):
+            return value
+        if isinstance(payload, dict):
+            return str(payload.get("message") or payload.get("question") or value)
+    return str(value or "Please provide the requested input.")
+
+
+def _redact_log_value(value) -> str:
+    """Remove payment secrets before request data reaches application logs."""
+    text = str(value)
+    text = re.sub(r"(?i)(card(?:\s+number)?|pan)\s*[:=]?\s*\d{13,19}", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?i)(cvv|cvc|security\s+code)\s*[:=]?\s*\d{3,4}", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?<!\d)\d{13,19}(?!\d)", "[CARD_REDACTED]", text)
+    return text
+
+
 class WebSocketHandler:
 
     def __init__(self, runner, session_manager, workflow_service, agent_service, artifact_service, file_service, state_manager):
@@ -159,7 +185,7 @@ class WebSocketHandler:
 
                 try:
                     raw = await websocket.receive_text()
-                    logger.info("Received raw message: %s", raw)
+                    logger.info("Received raw message: %s", _redact_log_value(raw))
                 except WebSocketDisconnect:
                     logger.info("Client disconnected")
                     break
@@ -283,8 +309,9 @@ class WebSocketHandler:
                         if pending_plan.get("status") == "awaiting_input":
                             node_id = pending_plan.get("current_node_id")
                             node = next((n for n in pending_plan.get("nodes", []) if n.get("node_id") == node_id), {})
+                            task_question = (orch_state.task or {}).get("question")
                             await emitter.waiting_for_input(
-                                node.get("output") or (orch_state.task or {}).get("question"),
+                                _format_input_question(task_question or node.get("output")),
                                 node_id=node_id,
                                 agent=node.get("agent_name"),
                                 task_id=(orch_state.task or {}).get("task_id"),
@@ -339,8 +366,9 @@ class WebSocketHandler:
                             if pending_plan.get("status") == "awaiting_input":
                                 node_id = pending_plan.get("current_node_id")
                                 node = next((n for n in pending_plan.get("nodes", []) if n.get("node_id") == node_id), {})
+                                task_question = (orch_state.task or {}).get("question")
                                 await emitter.waiting_for_input(
-                                    node.get("output") or (orch_state.task or {}).get("question"),
+                                    _format_input_question(task_question or node.get("output")),
                                     node_id=node_id,
                                     agent=node.get("agent_name"),
                                     task_id=(orch_state.task or {}).get("task_id"),
@@ -495,7 +523,7 @@ class WebSocketHandler:
 
                 await emitter.status("turn_started")
 
-                logger.info("Starting agent loop for prompt: %s", prompt)
+                logger.info("Starting agent loop for prompt: %s", _redact_log_value(prompt))
                 # =========================
                 # RUN AGENT LOOP
                 # =========================

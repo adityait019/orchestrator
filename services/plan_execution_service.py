@@ -80,14 +80,24 @@ class PlanExecutionService:
         if resume_input is not None and not resume_node_id:
             raise RuntimeError("Plan is awaiting input but has no resumable node")
 
+        # On a resumed turn, skip nodes before the paused node, execute that
+        # node once, then continue normally through all later pending nodes.
+        resume_reached = resume_input is None
         for node in plan["nodes"]:
             if node.get("status") == "completed":
                 if node.get("invocation_id"):
                     parent_by_node[node["node_id"]] = int(node["invocation_id"])
                     previous_invocation_id = int(node["invocation_id"])
                 continue
-            if resume_input is not None and node["node_id"] != resume_node_id:
-                continue
+            if resume_input is not None and not resume_reached:
+                if node["node_id"] != resume_node_id:
+                    continue
+                resume_reached = True
+
+            if node.get("status") in {"failed", "cancelled"}:
+                plan["status"] = "failed"
+                plan["error"] = node.get("output") or f"Plan node {node['node_id']} is {node['status']}"
+                return outputs
             agent = agent_map.get(node["agent_name"])
             if not agent:
                 raise RuntimeError(f"Planned agent is no longer available: {node['agent_name']}")
@@ -155,8 +165,30 @@ class PlanExecutionService:
                 "task.node.id": node["node_id"],
                 "invocation.id": str(invocation.id),
             }):
-                async for parsed in agent._adapter.stream_message(**stream_kwargs):
-                    await processor.process(agent._build_adk_event(parsed, adapter_context), event_context)
+                try:
+                    async for parsed in agent._adapter.stream_message(**stream_kwargs):
+                        await processor.process(agent._build_adk_event(parsed, adapter_context), event_context)
+                except Exception as exc:
+                    # Keep the durable node/invocation state consistent even
+                    # when the adapter itself raises instead of yielding an
+                    # A2A failed task event.
+                    error = f"A2A invocation failed: {exc}"
+                    await self.agent_service.fail_invocation(
+                        runtime.invocation_id,
+                        error,
+                        runtime.input_tokens,
+                        runtime.output_tokens,
+                        runtime.total_tokens,
+                    )
+                    runtime.failed = True
+                    runtime.completed = True
+                    node["status"] = "failed"
+                    node["invocation_id"] = invocation.id
+                    node["output"] = {"status": "failed", "error": error}
+                    plan["status"] = "failed"
+                    plan["error"] = error
+                    logger.exception("Plan node %s failed during A2A streaming", node["node_id"])
+                    return outputs
 
             task = invocation_ctx.orch_state.task or {}
             if task.get("interaction") == "request_input" and not runtime.completed:

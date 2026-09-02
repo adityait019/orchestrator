@@ -62,9 +62,12 @@ remote agents. Return JSON only, with this exact shape:
 }
 Use a plan only when a remote agent can materially help. Nexus owns the conversation and will
 compose the final user-facing answer; do not ask the planner to summarize the transcript.
-For a plan, make nodes sequential:
-each dependency must refer to an earlier node. Set use_uploaded_files only for nodes that
-actually need the original files. Downstream nodes receive their dependency outputs automatically.
+For a plan, make nodes sequential. Each dependency must refer to an earlier node, and every
+node must list all earlier nodes whose output it needs. In particular, a notification node
+that reports payment or shipping must depend on the payment and shipping nodes, not only the
+order node. Set use_uploaded_files only for nodes that actually need the original files.
+Downstream nodes receive the outputs of every declared dependency automatically. If a required
+user input is missing, keep the node in the plan and let that agent return input-required.
 Never invent agents or include markdown."""
 
         try:

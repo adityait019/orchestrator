@@ -119,11 +119,40 @@ async def handle_command(ws, session_id: str, command: str) -> bool:
     return True
 
 
+def read_multiline_input() -> str:
+    """Read a prompt until the user submits an empty continuation line.
+
+    Slash commands remain single-line commands. For normal prompts, the first
+    line is entered at the usual prompt and subsequent lines use ``...``.
+    """
+    first_line = Prompt.ask("[bold yellow]You[/bold yellow]")
+    if not first_line.strip():
+        return ""
+    if first_line.lstrip().startswith("/"):
+        if first_line.strip().lower() == "/paste":
+            console.print("[dim]Paste your full prompt. Type /end on a separate line when finished.[/dim]")
+            lines = []
+            while True:
+                line = console.input("")
+                if line.strip().lower() == "/end":
+                    return "\n".join(lines).strip()
+                lines.append(line.rstrip())
+        return first_line.strip()
+
+    lines = [first_line.rstrip()]
+    while True:
+        line = console.input("[bold yellow]...[/bold yellow] ")
+        if not line.strip():
+            break
+        lines.append(line.rstrip())
+    return "\n".join(lines).strip()
+
+
 async def chat_loop(ws, session_id: str) -> None:
-    console.print("[dim]Tip: /help for commands · Ctrl+C to exit[/dim]")
+    console.print("[dim]Tip: /help for commands · Enter a blank line to send a multi-line prompt · Ctrl+C to exit[/dim]")
     while True:
         try:
-            user_input = (await asyncio.to_thread(Prompt.ask, "[bold yellow]You[/bold yellow]")).strip()
+            user_input = await asyncio.to_thread(read_multiline_input)
         except (EOFError, KeyboardInterrupt):
             console.print("\n👋 Exiting...", style="cyan")
             return

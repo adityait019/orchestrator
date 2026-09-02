@@ -135,11 +135,23 @@ def build_registry_table(payload) -> Table:
 
 
 def render_help() -> None:
-    console.print(Panel("""[bold]Chat[/bold] — type any message to talk to Nexus
-[bold]Agents[/bold] — /add, /remove, /list
-[bold]Files[/bold] — /upload <file1> [file2 ...]
-[bold]Dashboard[/bold] — /dashboard [live] [interval]
-[bold]Session[/bold] — /help, /exit""", title="📘 Commands", border_style="cyan"))
+    console.print(Panel("""[bold cyan]How to send a request[/bold cyan]
+• Single-line request: type it and press Enter.
+• Multi-line request: type each line, then press Enter on a blank line.
+• Large/structured paste: type [bold]/paste[/bold], paste the complete block,
+  then type [bold]/end[/bold] on a separate line.
+
+[bold cyan]Commands[/bold cyan]
+/help                         Show this help
+/list                         List connected agents
+/add <name> <host> <port>     Register an agent
+/remove <name>                Remove an agent
+/upload <file1> [file2 ...]   Upload files for the session
+/dashboard [live] [seconds]   Show dashboard statistics
+/exit or /quit                Exit the CLI
+
+[dim]During an agent interaction, reply normally to an input-required question
+or use /cancel to cancel the pending plan.[/dim]""", title="📘 Nexus CLI Help", border_style="cyan"))
 
 
 def render_dashboard(group, live: Live | None = None) -> None:
