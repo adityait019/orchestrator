@@ -132,6 +132,12 @@ app.include_router(_swagger_router, include_in_schema=False)  # Swagger UI with 
 app.mount("/__ctrl__", _orch_panel_app)  # Internal dashboard (no auth for simplicity)
 
 
+@app.get("/health", include_in_schema=False)
+async def health_check():
+    """Lightweight container/orchestrator liveness endpoint."""
+    return {"status": "ok"}
+
+
 # Core services
 session_manager = SessionManager(db_url=os.getenv("DATABASE_URL","not-present"),app_name=APP_NAME)
 state_manager = StateManager(session_manager=session_manager)

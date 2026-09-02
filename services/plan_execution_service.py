@@ -167,6 +167,18 @@ class PlanExecutionService:
                 plan["current_node_id"] = node["node_id"]
                 return outputs
 
+            if runtime.failed:
+                node["status"] = "failed"
+                node["invocation_id"] = invocation.id
+                node["output"] = runtime.output_payload or runtime.buffer
+                plan["status"] = "failed"
+                plan["error"] = node["output"]
+                logger.warning(
+                    "Plan %s stopped after failed node %s (%s)",
+                    plan.get("plan_id"), node["node_id"], node["agent_name"],
+                )
+                return outputs
+
             if not runtime.completed:
                 await self.agent_service.complete_invocation(
                     runtime.invocation_id,

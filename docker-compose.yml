@@ -1,0 +1,58 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestrator-app
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://orchestrator:orchestrator@postgres:5432/orchestrator
+      PUBLIC_BASE_URL: http://localhost:8000
+      FILE_SIGNING_SECRET: ${FILE_SIGNING_SECRET:-dev-only-secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./root_agent.log:/app/root_agent.log
+    networks:
+      - orchestrator-net
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore:
+            - .git
+            - __pycache__
+            - .pytest_cache
+            - .venv
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: orchestrator-db
+    environment:
+      POSTGRES_USER: orchestrator
+      POSTGRES_PASSWORD: orchestrator
+      POSTGRES_DB: orchestrator
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchestrator -d orchestrator"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - orchestrator-net
+
+volumes:
+  postgres_data:
+
+networks:
+  orchestrator-net:
+    driver: bridge

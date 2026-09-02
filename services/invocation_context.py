@@ -30,6 +30,7 @@ class AgentRuntime:
     output_artifacts: list = field(default_factory=list)
 
     completed: bool = False
+    failed: bool = False
     
 @dataclass
 class InvocationContext:

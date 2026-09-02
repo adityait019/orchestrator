@@ -219,3 +219,11 @@ class WSEmitter:
             "agent_name": agent_name,
             "thoughts": thoughts,
         })
+
+    async def plan_failed(self, error=None, nodes=None, total_tokens=0):
+        await self._safe_send({
+            "type": "plan_failed",
+            "error": error or "Plan execution failed.",
+            "nodes": nodes or [],
+            "total_tokens": total_tokens,
+        })

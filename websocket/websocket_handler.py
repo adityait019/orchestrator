@@ -289,6 +289,14 @@ class WebSocketHandler:
                                 agent=node.get("agent_name"),
                                 task_id=(orch_state.task or {}).get("task_id"),
                             )
+                        elif pending_plan.get("status") == "failed":
+                            error = pending_plan.get("error") or "Plan execution failed."
+                            await emitter.bot_message(f"❌ Plan failed: {error}", agent="Nexus")
+                            await emitter.plan_failed(
+                                error,
+                                pending_plan.get("nodes"),
+                                sum(r.total_tokens or 0 for r in invocation_ctx.runtimes.values()),
+                            )
                         else:
                             await emitter.bot_message("Plan completed.", agent="Nexus")
                             await emitter.plan_completed(
@@ -336,6 +344,14 @@ class WebSocketHandler:
                                     node_id=node_id,
                                     agent=node.get("agent_name"),
                                     task_id=(orch_state.task or {}).get("task_id"),
+                                )
+                            elif pending_plan.get("status") == "failed":
+                                error = pending_plan.get("error") or "Plan execution failed."
+                                await emitter.bot_message(f"❌ Plan failed: {error}", agent="Nexus")
+                                await emitter.plan_failed(
+                                    error,
+                                    pending_plan.get("nodes"),
+                                    sum(r.total_tokens or 0 for r in invocation_ctx.runtimes.values()),
                                 )
                             else:
                                 await emitter.bot_message("Plan completed.", agent="Nexus")

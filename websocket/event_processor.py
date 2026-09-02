@@ -90,6 +90,7 @@ class EventProcessor:
                 runtime.output_tokens,
                 runtime.total_tokens,
             )
+            runtime.failed = True
         else:
             output = runtime.output_payload if runtime.output_payload is not None else (runtime.buffer or None)
 
@@ -270,6 +271,20 @@ class EventProcessor:
         # =========================
         # ✅ ERROR
         # =========================
+        # A2A represents remote tool/schema failures as a terminal task state,
+        # not necessarily as an ADK Event.error_message.
+        raw_state = str(normalized.a2a_state or "").lower().strip()
+        if raw_state == "failed":
+            err_msg = (
+                normalized.metadata.get("a2a:error_text")
+                or normalized.text
+                or "Remote agent task failed"
+            )
+            runtime.buffer += f"\nERROR: {err_msg}"
+            await self._finalize_invocation(ctx, runtime, failed=True, error_msg=err_msg)
+            await self.emitter.bot_message(f"❌ {err_msg}", agent=runtime.agent_name)
+            return
+
         if getattr(event, "error_message", None):
             err_msg = event.error_message
             runtime.buffer += f"\nERROR: {err_msg}"
@@ -551,7 +566,14 @@ class EventProcessor:
         # =========================
         # ✅ FINALIZE (FIXED)
         # =========================
-        is_terminal = not getattr(event, "partial", False)
+        # Remote A2A events are all wrapped as non-partial ADK events by the
+        # adapter. Their task state is the authoritative terminal signal.
+        # Fall back to partial for local/non-A2A events.
+        is_terminal = (
+            raw_state in TERMINAL_STATES
+            if normalized.a2a_state
+            else not getattr(event, "partial", False)
+        )
 
         task = ctx["invocation_ctx"].orch_state.task
 
